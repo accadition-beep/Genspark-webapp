@@ -1,0 +1,13 @@
+{
+  "name": "adition",
+  "short_name": "adition",
+  "description": "adition Electric Solution — Service Management",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e40af",
+  "theme_color": "#1e40af",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

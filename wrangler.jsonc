@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "adition-electric",
+  "compatibility_date": "2026-03-02",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "adition-production",
+      "database_id": "5aa29106-e4a2-4bf5-8fae-47210d42ce32"
+    }
+  ]
+}

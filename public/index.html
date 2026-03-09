@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="theme-color" content="#1e40af"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="adition"/>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
+  <link rel="manifest" href="/manifest.json"/>
+  <title>adition</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body class="min-h-screen bg-gray-50">
+
+<div id="offline-banner"><i class="fas fa-wifi-slash mr-2"></i>Offline — actions queued, will sync on reconnect</div>
+<div id="sync-badge" onclick="manualSync()"><i class="fas fa-sync-alt"></i><span id="sync-count">0</span> pending</div>
+<div id="print-area"></div>
+
+<!-- LOGIN -->
+<div id="login-screen" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl mb-4 shadow-lg">
+        <i class="fas fa-bolt text-white text-2xl"></i>
+      </div>
+      <h1 class="text-3xl font-black text-gray-800 tracking-tight">adition</h1>
+      <p class="text-blue-600 font-semibold text-sm tracking-widest mt-1">ELECTRIC SOLUTION</p>
+    </div>
+    <form id="login-form" class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Email / Username</label>
+        <input id="login-email" type="text" placeholder="acc.adition@gmail.com or staff1–4" autocomplete="username"
+          class="w-full border border-gray-300 rounded-lg px-4 py-3 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none"/>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+        <div class="relative">
+          <input id="login-password" type="password" placeholder="Password" autocomplete="current-password"
+            class="w-full border border-gray-300 rounded-lg px-4 py-3 text-sm pr-10 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none"/>
+          <button type="button" onclick="togglePwd()" class="absolute right-3 top-3.5 text-gray-400 hover:text-gray-600">
+            <i id="eye-icon" class="fas fa-eye text-sm"></i>
+          </button>
+        </div>
+      </div>
+      <div id="login-error" class="text-red-500 text-sm text-center bg-red-50 rounded-lg px-3 py-2 hidden"></div>
+      <button type="submit" id="login-submit-btn"
+        class="w-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors">
+        <span id="login-btn-text">Sign In</span>
+        <div id="login-spinner" class="spinner w-4 h-4 hidden"></div>
+      </button>
+    </form>
+    <p class="text-center text-xs text-gray-400 mt-6">adition™ since 1984 © 2026</p>
+    <p class="text-center text-xs text-gray-300 mt-1">Gheekanta, Ahmedabad</p>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app-screen" class="hidden min-h-screen flex flex-col">
+  <nav class="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-sm">
+    <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center"><i class="fas fa-bolt text-white text-sm"></i></div>
+        <div>
+          <p class="text-base font-black text-gray-800 leading-tight">adition</p>
+          <p class="text-xs text-blue-500 font-medium" id="nav-user-info">Service Manager</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="role-badge" class="hidden text-xs font-semibold px-2 py-1 rounded-full"></span>
+        <button onclick="openAdminTools()" id="admin-tools-btn" class="hidden text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg p-2" title="Admin Tools"><i class="fas fa-tools text-sm"></i></button>
+        <button onclick="openReportCenter()" id="report-btn" class="hidden text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg p-2" title="Reports"><i class="fas fa-chart-bar text-sm"></i></button>
+        <button onclick="handleLogout()" class="text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-lg p-2" title="Logout"><i class="fas fa-sign-out-alt text-sm"></i></button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="flex-1 max-w-5xl mx-auto w-full px-4 py-5">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 class="text-xl font-bold text-gray-800">Job Dashboard</h2>
+        <p id="job-count-text" class="text-sm text-gray-400 mt-0.5">Loading...</p>
+      </div>
+      <button id="new-job-btn" onclick="openNewJobModal()" class="hidden admin-only-el bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm">
+        <i class="fas fa-plus"></i> New Job
+      </button>
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-200 mb-4 shadow-sm overflow-hidden">
+      <div class="flex border-b border-gray-100">
+        <button id="tab-active" onclick="switchTab('active')" class="tab-btn active flex-1 py-3 text-sm font-semibold text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-2">
+          <i class="fas fa-wrench text-xs"></i> Active Jobs <span id="active-tab-count" class="bg-blue-100 text-blue-600 text-xs font-bold px-2 py-0.5 rounded-full"></span>
+        </button>
+        <button id="tab-delivered" onclick="switchTab('delivered')" class="tab-btn hidden admin-only-el flex-1 py-3 text-sm font-semibold text-gray-400 hover:bg-blue-50 flex items-center justify-center gap-2">
+          <i class="fas fa-truck text-xs"></i> Delivered <span id="delivered-tab-count" class="bg-indigo-100 text-indigo-600 text-xs font-bold px-2 py-0.5 rounded-full"></span>
+        </button>
+      </div>
+      <div id="active-filter-bar" class="p-3 flex flex-wrap gap-3 items-center">
+        <div class="flex-1 min-w-48 relative">
+          <i class="fas fa-search absolute left-3 top-2.5 text-gray-400 text-sm"></i>
+          <input id="search-input" type="text" placeholder="Search by ID, customer, description..." oninput="filterJobs()" class="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-blue-400"/>
+        </div>
+        <select id="status-filter" onchange="onStatusFilterChange()" class="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600 outline-none">
+          <option value="">All Active</option>
+          <option value="Under Repair">🔴 Under Repair</option>
+          <option value="Repaired">🟢 Repaired</option>
+          <option value="Return">🟡 Return</option>
+        </select>
+        <select id="staff-filter" onchange="filterJobs()" class="hidden admin-only-el border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600 outline-none">
+          <option value="">All Staff</option>
+          <option value="Staff 1">Staff 1</option><option value="Staff 2">Staff 2</option>
+          <option value="Staff 3">Staff 3</option><option value="Staff 4">Staff 4</option>
+        </select>
+        <button onclick="loadJobs()" class="text-blue-500 hover:text-blue-700 text-sm flex items-center gap-1 px-2"><i class="fas fa-sync-alt text-xs"></i> Refresh</button>
+      </div>
+      <div id="delivered-filter-bar" class="hidden p-3 flex flex-wrap gap-3 items-center">
+        <div class="flex-1 min-w-48 relative">
+          <i class="fas fa-search absolute left-3 top-2.5 text-gray-400 text-sm"></i>
+          <input id="delivered-search" type="text" placeholder="Search delivered jobs..." oninput="filterDelivered()" class="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-blue-400"/>
+        </div>
+        <button onclick="loadJobs()" class="text-blue-500 hover:text-blue-700 text-sm flex items-center gap-1 px-2"><i class="fas fa-sync-alt text-xs"></i> Refresh</button>
+      </div>
+    </div>
+
+    <div id="loading-indicator" class="hidden text-center py-16"><div class="spinner w-10 h-10 mx-auto mb-3"></div><p class="text-gray-400 text-sm">Loading jobs...</p></div>
+    <div id="empty-state" class="hidden text-center py-16"><i class="fas fa-clipboard-list text-gray-300 text-4xl mb-4 block"></i><p class="text-gray-500 font-medium">No jobs found</p><p class="text-gray-400 text-sm mt-1">Create a new job or adjust filters</p></div>
+    <div id="jobs-container" class="space-y-4"></div>
+  </main>
+</div>
+
+<!-- AUTOCOMPLETE DROPDOWN -->
+<div id="autocomplete-dropdown" class="hidden fixed z-[9999] bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden" style="min-width:280px"></div>
+
+<!-- NEW JOB MODAL -->
+<div id="new-job-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-plus-circle text-blue-500 mr-2"></i>New Job Card</h3>
+      <button onclick="closeModal('new-job-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Customer Name <span class="text-red-500">*</span></label>
+        <input id="new-customer-name" type="text" placeholder="Enter customer name" autocomplete="off" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Mobile Number</label>
+        <input id="new-customer-mobile" type="tel" placeholder="Mobile (autocomplete)" autocomplete="off" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Address</label>
+        <input id="new-customer-address" type="text" placeholder="Area, Landmark (optional)" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+        <textarea id="new-notes" placeholder="Any special notes..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
+      </div>
+    </div>
+    <div class="flex gap-3 p-5 border-t border-gray-100">
+      <button onclick="closeModal('new-job-modal')" class="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium">Cancel</button>
+      <button onclick="createJob()" class="flex-1 bg-blue-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-blue-700 flex items-center justify-center gap-2">
+        <span id="create-job-btn-text">Create Job</span><div id="create-job-spinner" class="spinner w-4 h-4 hidden"></div>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT JOB MODAL -->
+<div id="edit-job-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-edit text-yellow-500 mr-2"></i>Edit Job</h3>
+      <button onclick="closeModal('edit-job-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-4">
+      <input id="edit-job-id" type="hidden"/>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">Customer Name *</label><input id="edit-customer-name" type="text" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">Mobile</label><input id="edit-customer-mobile" type="tel" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">Address</label><input id="edit-customer-address" type="text" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">Amount Received (₹)</label><input id="edit-amount-received" type="number" min="0" step="0.01" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">Notes</label><textarea id="edit-notes" rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea></div>
+    </div>
+    <div class="flex gap-3 p-5 border-t border-gray-100">
+      <button onclick="closeModal('edit-job-modal')" class="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium">Cancel</button>
+      <button onclick="saveJobEdit()" class="flex-1 bg-blue-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-blue-700">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- MACHINE MODAL -->
+<div id="machine-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[92vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 id="machine-modal-title" class="text-lg font-bold text-gray-800"><i class="fas fa-cog text-blue-500 mr-2"></i>Add Machine</h3>
+      <button onclick="closeModal('machine-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-4">
+      <input id="machine-modal-job-id" type="hidden"/>
+      <input id="machine-modal-machine-id" type="hidden"/>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">Description <span class="text-red-500">*</span></label>
+        <input id="machine-desc" type="text" placeholder="e.g., Ceiling Fan, Motor, Pump..." class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">Condition / Problem</label>
+        <textarea id="machine-condition" rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea></div>
+      <div id="price-qty-row" class="hidden grid grid-cols-2 gap-4">
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Quantity</label><input id="machine-qty" type="number" min="1" value="1" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Unit Price (₹)</label><input id="machine-price" type="number" min="0" step="0.01" value="0" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
+      </div>
+      <div id="assigned-to-row" class="hidden">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Assign To Staff</label>
+        <select id="machine-assigned-to" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400">
+          <option value="">— Unassigned —</option>
+          <option value="Staff 1">Staff 1</option><option value="Staff 2">Staff 2</option>
+          <option value="Staff 3">Staff 3</option><option value="Staff 4">Staff 4</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+        <select id="machine-status" onchange="onMachineStatusChange(this)" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400">
+          <option value="Under Repair">🔴 Under Repair</option>
+          <option value="Repaired">🟢 Repaired</option>
+          <option value="Return">🟡 Return</option>
+        </select>
+      </div>
+      <div id="work-done-row" class="hidden">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Work Done <span class="text-red-500">*</span></label>
+        <div class="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-2"><i class="fas fa-lock mr-1"></i>Internal only — not printed on job card</div>
+        <textarea id="machine-work-done" placeholder="Describe the repair performed..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
+      </div>
+      <div id="return-reason-row" class="hidden">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Return Reason <span class="text-red-500">*</span></label>
+        <div class="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-2"><i class="fas fa-lock mr-1"></i>Internal only</div>
+        <textarea id="machine-return-reason" placeholder="Reason for return..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
+      </div>
+      <div id="image-upload-row" class="hidden">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Machine Image</label>
+        <div id="image-upload-area" class="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50" onclick="document.getElementById('machine-image-input').click()">
+          <div id="image-preview-container"><i class="fas fa-cloud-upload-alt text-gray-300 text-3xl mb-2"></i><p class="text-sm text-gray-400">Click to upload</p><p class="text-xs text-gray-300 mt-1">Auto-compressed</p></div>
+          <img id="machine-image-preview" class="hidden max-h-32 mx-auto rounded-lg" alt="Preview"/>
+        </div>
+        <input id="machine-image-input" type="file" accept="image/*" class="hidden" onchange="handleImageUpload(this)"/>
+        <button id="remove-image-btn" onclick="removeImage()" class="hidden mt-2 text-red-400 hover:text-red-600 text-xs flex items-center gap-1"><i class="fas fa-trash"></i> Remove Image</button>
+      </div>
+    </div>
+    <div class="flex gap-3 p-5 border-t border-gray-100 sticky bottom-0 bg-white">
+      <button onclick="closeModal('machine-modal')" class="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium">Cancel</button>
+      <button onclick="saveMachine()" class="flex-1 bg-blue-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-blue-700 flex items-center justify-center gap-2">
+        <span id="machine-save-btn-text">Save Machine</span><div id="machine-save-spinner" class="spinner w-4 h-4 hidden"></div>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- IMAGE VIEWER -->
+<div id="image-viewer-modal" class="fixed inset-0 bg-black/80 z-[100] hidden flex items-center justify-center p-4" onclick="closeModal('image-viewer-modal')">
+  <div class="relative max-w-2xl max-h-full">
+    <img id="image-viewer-img" src="" alt="" class="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain"/>
+    <button onclick="closeModal('image-viewer-modal')" class="absolute top-2 right-2 bg-black/50 text-white rounded-full w-8 h-8 flex items-center justify-center"><i class="fas fa-times text-sm"></i></button>
+  </div>
+</div>
+
+<!-- DELIVERY MODAL -->
+<div id="delivery-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in max-h-[92vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <div><h3 class="text-lg font-bold text-gray-800"><i class="fas fa-truck text-indigo-500 mr-2"></i>Deliver Job</h3><p class="text-xs text-gray-400 mt-0.5">Job: <span id="delivery-job-id-label" class="font-semibold text-gray-600"></span></p></div>
+      <button onclick="closeModal('delivery-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-4">
+      <input id="delivery-job-id" type="hidden"/>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-2">Delivery Method</label>
+        <div class="flex gap-2">
+          <button id="btn-inperson" onclick="setDeliveryType('in_person')" class="flex-1 bg-indigo-600 text-white rounded-lg py-2 text-sm font-semibold"><i class="fas fa-user mr-1"></i> In Person</button>
+          <button id="btn-courier" onclick="setDeliveryType('courier')" class="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2 text-sm font-medium hover:bg-gray-50"><i class="fas fa-truck mr-1"></i> Courier</button>
+        </div>
+        <input id="delivery-type" type="hidden" value="in_person"/>
+      </div>
+      <div id="delivery-inperson-fields" class="space-y-3">
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Receiver Name</label><input id="delivery-name" type="text" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Mobile</label><input id="delivery-mobile" type="tel" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Relation</label><input id="delivery-relation" type="text" placeholder="e.g. Self, Son" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+      </div>
+      <div id="delivery-courier-fields" class="hidden space-y-3">
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Shipping Service <span class="text-red-500">*</span></label><input id="delivery-service" type="text" placeholder="e.g. DTDC, BlueDart" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Tracking ID <span class="text-red-500">*</span></label><input id="delivery-tracking" type="text" placeholder="Tracking number" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Driver Name</label><input id="delivery-driver" type="text" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Driver Contact</label><input id="delivery-driver-contact" type="tel" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+      </div>
+    </div>
+    <div class="flex gap-3 p-5 border-t border-gray-100 sticky bottom-0 bg-white">
+      <button onclick="closeModal('delivery-modal')" class="border border-gray-200 text-gray-600 rounded-lg py-2.5 px-4 text-sm font-medium">Cancel</button>
+      <button onclick="confirmDelivery()" class="flex-1 bg-indigo-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-indigo-700 flex items-center justify-center gap-2"><i class="fas fa-check"></i> Confirm Delivery</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN TOOLS MODAL -->
+<div id="admin-tools-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[92vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-tools text-blue-500 mr-2"></i>Admin Tools</h3>
+      <button onclick="closeModal('admin-tools-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-5">
+      <div class="bg-blue-50 rounded-xl p-4">
+        <h4 class="font-semibold text-gray-800 mb-3"><i class="fas fa-download text-blue-500 mr-2"></i>Export Data</h4>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div><label class="block text-xs text-gray-600 mb-1">From</label><input id="export-from" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+          <div><label class="block text-xs text-gray-600 mb-1">To</label><input id="export-to" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+        </div>
+        <div class="mb-3"><label class="block text-xs text-gray-600 mb-1">Or by Month</label><input id="export-month" type="month" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+        <p class="text-xs text-gray-400 mb-3">Leave blank to export all. Images included as Base64.</p>
+        <button onclick="exportData()" class="w-full bg-blue-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-blue-700 flex items-center justify-center gap-2"><i class="fas fa-file-csv"></i> Export CSV</button>
+      </div>
+      <div class="bg-green-50 rounded-xl p-4">
+        <h4 class="font-semibold text-gray-800 mb-2"><i class="fas fa-upload text-green-500 mr-2"></i>Import / Restore CSV</h4>
+        <p class="text-xs text-gray-500 mb-3">Restore data from exported CSV. Prevents duplicates via UPSERT.</p>
+        <input id="restore-csv-file" type="file" accept=".csv" class="hidden" onchange="handleRestoreCsv(this)"/>
+        <button onclick="document.getElementById('restore-csv-file').click()" class="w-full bg-green-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-green-700 flex items-center justify-center gap-2"><i class="fas fa-file-upload"></i> Upload & Restore CSV</button>
+      </div>
+      <div class="bg-amber-50 rounded-xl p-4">
+        <h4 class="font-semibold text-gray-800 mb-2"><i class="fas fa-sync-alt text-amber-500 mr-2"></i>Offline Sync Queue</h4>
+        <div id="queue-list" class="space-y-2 max-h-40 overflow-y-auto mb-3"></div>
+        <button onclick="manualSync()" class="w-full border border-amber-300 text-amber-700 rounded-lg py-2 text-sm font-medium hover:bg-amber-100"><i class="fas fa-sync-alt mr-1"></i> Sync Now</button>
+      </div>
+      <div id="cleanup-section" class="hidden bg-red-50 rounded-xl p-4">
+        <h4 class="font-semibold text-gray-800 mb-3"><i class="fas fa-trash-alt text-red-500 mr-2"></i>Data Cleanup <span class="text-xs text-red-400">(Owner only)</span></h4>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div><label class="block text-xs text-gray-600 mb-1">From</label><input id="cleanup-from" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+          <div><label class="block text-xs text-gray-600 mb-1">To</label><input id="cleanup-to" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+        </div>
+        <button onclick="cleanupData()" class="w-full bg-red-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-red-700"><i class="fas fa-trash-alt mr-2"></i>Delete Jobs in Range</button>
+      </div>
+      <div id="reset-seq-section" class="hidden">
+        <button onclick="resetSequence()" class="w-full border border-red-200 text-red-600 rounded-lg py-2 text-sm font-medium hover:bg-red-50"><i class="fas fa-redo mr-1"></i> Reset Job ID Sequence</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- REPORT MODAL -->
+<div id="report-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl fade-in max-h-[92vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-chart-bar text-purple-500 mr-2"></i>Report Center</h3>
+      <button onclick="closeModal('report-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-5">
+      <div class="bg-gray-50 rounded-xl p-4 space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-xs text-gray-600 mb-1">From</label><input id="report-from" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+          <div><label class="block text-xs text-gray-600 mb-1">To</label><input id="report-to" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+        </div>
+        <div><label class="block text-xs text-gray-600 mb-1">Or by Month</label><input id="report-month" type="month" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+        <div>
+          <label class="block text-xs text-gray-600 mb-2">Status Filter</label>
+          <div class="flex flex-wrap gap-3">
+            <label class="flex items-center gap-1 text-sm cursor-pointer"><input type="checkbox" value="Under Repair" checked class="report-status-cb"/> 🔴 Under Repair</label>
+            <label class="flex items-center gap-1 text-sm cursor-pointer"><input type="checkbox" value="Repaired" checked class="report-status-cb"/> 🟢 Repaired</label>
+            <label class="flex items-center gap-1 text-sm cursor-pointer"><input type="checkbox" value="Return" checked class="report-status-cb"/> 🟡 Return</label>
+            <label class="flex items-center gap-1 text-sm cursor-pointer"><input type="checkbox" value="Delivered" checked class="report-status-cb"/> 🔵 Delivered</label>
+          </div>
+        </div>
+        <div id="report-staff-filter-row" class="hidden"><label class="block text-xs text-gray-600 mb-1">Staff Filter</label>
+          <select id="report-staff" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none">
+            <option value="">All Staff</option><option value="Staff 1">Staff 1</option><option value="Staff 2">Staff 2</option><option value="Staff 3">Staff 3</option><option value="Staff 4">Staff 4</option>
+          </select>
+        </div>
+        <button onclick="runReport()" class="w-full bg-purple-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-purple-700 flex items-center justify-center gap-2"><i class="fas fa-search"></i> Generate Report</button>
+      </div>
+      <div id="report-summary" class="hidden">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4" id="report-summary-cards"></div>
+        <div class="flex justify-between items-center mb-3">
+          <h4 class="font-semibold text-gray-700 text-sm">Results (<span id="report-result-count">0</span>)</h4>
+          <button onclick="exportReportCsv()" class="bg-green-600 text-white rounded-lg py-1.5 px-3 text-xs font-semibold hover:bg-green-700 flex items-center gap-1"><i class="fas fa-download"></i> Export CSV</button>
+        </div>
+        <div class="overflow-x-auto rounded-xl border border-gray-200">
+          <table class="w-full text-xs"><thead class="bg-gray-50"><tr>
+            <th class="px-3 py-2 text-left font-semibold text-gray-600">Job ID</th>
+            <th class="px-3 py-2 text-left font-semibold text-gray-600">Customer</th>
+            <th class="px-3 py-2 text-left font-semibold text-gray-600">Description</th>
+            <th class="px-3 py-2 text-left font-semibold text-gray-600">Status</th>
+            <th class="px-3 py-2 text-left font-semibold text-gray-600">Assigned</th>
+            <th class="px-3 py-2 text-left font-semibold text-gray-600 report-admin-col hidden">Price</th>
+            <th class="px-3 py-2 text-left font-semibold text-gray-600">Date</th>
+          </tr></thead><tbody id="report-table-body"></tbody></table>
+        </div>
+      </div>
+      <div id="report-empty" class="hidden text-center py-8 text-gray-400 text-sm">No results found for selected filters</div>
+    </div>
+  </div>
+</div>
+
+<!-- CONFIRM DIALOG -->
+<div id="confirm-dialog" class="fixed inset-0 bg-black/50 z-[9999] hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 fade-in text-center">
+    <div class="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4"><i class="fas fa-exclamation-triangle text-red-500"></i></div>
+    <h3 class="font-bold text-gray-800 mb-2" id="confirm-title">Confirm</h3>
+    <p class="text-sm text-gray-500 mb-5" id="confirm-message">Are you sure?</p>
+    <div class="flex gap-3">
+      <button onclick="closeModal('confirm-dialog')" class="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium">Cancel</button>
+      <button id="confirm-ok-btn" onclick="if(confirmCallback){confirmCallback();closeModal('confirm-dialog')}" class="flex-1 bg-red-600 text-white rounded-lg py-2.5 text-sm font-semibold">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] hidden px-5 py-3 rounded-xl shadow-2xl text-sm font-semibold text-white max-w-sm text-center transition-all"></div>
+
+<!-- PRINT SPINNER -->
+<div id="print-spinner" class="hidden fixed inset-0 bg-white/90 z-[9999] flex items-center justify-center flex-col gap-3">
+  <div class="spinner w-12 h-12"></div>
+  <p class="text-gray-600 font-semibold">Generating high-res image...</p>
+  <p class="text-gray-400 text-sm">Please wait, this takes a moment</p>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
