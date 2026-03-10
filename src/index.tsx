@@ -45,7 +45,7 @@ app.route('/api/jobs',      jobRoutes)
 app.route('/api/admin',     adminRoutes)
 app.route('/api/customers', customerRoutes)
 
-app.get('/api/health', (c) => c.json({ status: 'ok', service: 'adition', version: '10.2' }))
+app.get('/api/health', (c) => c.json({ status: 'ok', service: 'adition', version: '10.3' }))
 app.get('/favicon.ico', (c) => new Response(null, { status: 204 }))
 app.get('/favicon.svg', (c) => new Response(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#1e40af"/><text x="50" y="68" font-size="60" text-anchor="middle" fill="white">&#9889;</text></svg>`, { headers: { 'Content-Type': 'image/svg+xml' } }))
 
