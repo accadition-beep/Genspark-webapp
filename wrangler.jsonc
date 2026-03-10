@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "adition-electric",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "pages_build_output_dir": "./dist",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "adition-production",
+      "database_id": "89da02a9-b1c6-4ea2-b122-23e62d32e3c8"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "PRODUCT_IMAGES",
+      "bucket_name": "adition-images"
+    }
+  ],
+  "vars": {
+    "JWT_SECRET": "change-me-in-production-use-wrangler-secret"
+  }
+}

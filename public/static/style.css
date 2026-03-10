@@ -1,0 +1,110 @@
+/* ADITION ELECTRIC SOLUTION - Global Styles */
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', Arial, sans-serif;
+  background: #f5f7fa;
+  color: #1a1a2e;
+  min-height: 100vh;
+  overscroll-behavior: none;
+}
+
+#app {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 4px; }
+
+/* Input focus */
+input:focus, textarea:focus, select:focus {
+  outline: none !important;
+  border-color: #e94560 !important;
+  box-shadow: 0 0 0 3px rgba(233,69,96,0.15) !important;
+}
+
+/* Status badge classes */
+.badge-under-repair { background: #FFEBEE; color: #F44336; border: 1px solid #F44336; }
+.badge-repaired     { background: #E8F5E9; color: #4CAF50; border: 1px solid #4CAF50; }
+.badge-returned     { background: #FFF8E1; color: #B8860B; border: 1px solid #B8860B; }
+.badge-delivered    { background: #E3F2FD; color: #2196F3; border: 1px solid #2196F3; }
+
+/* Chip classes */
+.chip { display:inline-block; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600; }
+
+/* Card hover */
+button.job-card-btn:active { transform: scale(0.98); transition: transform 0.1s; }
+
+/* FAB */
+.fab {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #e94560, #c62a47);
+  color: white;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(233,69,96,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+}
+
+/* Image preview */
+.img-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+/* Modal animation */
+#modal-overlay {
+  animation: fadeIn 0.2s ease;
+}
+#modal-overlay > div {
+  animation: slideUp 0.25s ease;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* Toast */
+.toast-msg { animation: toastIn 0.3s ease; }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 20px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* Status filter scroll */
+.filter-bar { -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.filter-bar::-webkit-scrollbar { display: none; }
+
+/* Job card canvas (off-screen) */
+#job-card-canvas { 
+  position: fixed; 
+  left: -9999px; 
+  top: -9999px; 
+  width: 1080px; 
+  height: 1920px; 
+  background: white; 
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Safe area for PWA */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
