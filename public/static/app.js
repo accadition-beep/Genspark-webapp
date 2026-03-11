@@ -1,5 +1,13 @@
-// adition PWA — app.js v10.3
+// adition PWA — app.js v10.4
 // Admin: acc.adition@gmail.com / 0010  |  Staff: staff1-4 / same as username
+// Changes v10.4:
+//   - Staff sees ALL active jobs (not just assigned), assigned machines highlighted
+//   - "Assigned to Me" filter for staff
+//   - WhatsApp button always visible (no env check), uses Web Share API with file
+//   - Delivery: courier service/tracking optional, only show if filled in job card
+//   - Machine save: parse response correctly (success + machine obj)
+//   - Delivery job card sharing via Web Share API
+//   - Internal Notes field added to machine modal
 
 const API_BASE    = '';
 const OWNER_EMAIL = 'acc.adition@gmail.com';
@@ -14,6 +22,7 @@ let allJobs = [], filteredJobs = [], deliveredJobs = [], filteredDelivered = [];
 let currentTab = 'active';
 let confirmCallback = null;
 let idb = null;
+let staffFilterMode = 'all'; // 'all' | 'mine'
 
 /* ─────────────────────────────────────────────────────────────────────────────
    INDEXED DB
@@ -206,6 +215,11 @@ function showApp() {
   if (reportBtn) reportBtn.classList.toggle('hidden', !isAdmin);
   if (newJobBtn) newJobBtn.classList.remove('hidden');
   if (delTab)    delTab.classList.toggle('hidden', !isAdmin);
+
+  // Show "Assigned to Me" filter for staff
+  const myFilterRow = document.getElementById('my-filter-row');
+  if (myFilterRow) myFilterRow.classList.toggle('hidden', isAdmin);
+
   if (isAdmin) {
     const cs  = document.getElementById('cleanup-section');
     const rs  = document.getElementById('reset-seq-section');
@@ -263,9 +277,12 @@ async function loadJobs() {
 function updateJobCountText() {
   const el = document.getElementById('job-count-text'); if (!el) return;
   const act = allJobs.length, del = deliveredJobs.length;
-  el.textContent = userRole === 'admin'
-    ? `${act} active job${act!==1?'s':''} · ${del} delivered`
-    : `${act} assigned job${act!==1?'s':''}`;
+  if (userRole === 'admin') {
+    el.textContent = `${act} active job${act!==1?'s':''} · ${del} delivered`;
+  } else {
+    const mine = allJobs.filter(j => j.has_mine).length;
+    el.textContent = `${act} active job${act!==1?'s':''} · ${mine} assigned to you`;
+  }
   const atc = document.getElementById('active-tab-count');
   const dtc = document.getElementById('delivered-tab-count');
   if (atc) atc.textContent = act;
@@ -276,13 +293,31 @@ function filterJobs() {
   const q  = (document.getElementById('search-input')?.value  || '').toLowerCase();
   const st = document.getElementById('status-filter')?.value  || '';
   const sf = document.getElementById('staff-filter')?.value   || '';
+
   filteredJobs = allJobs.filter(j => {
-    const ms = !q  || j.job_id?.toLowerCase().includes(q) || j.customer_name?.toLowerCase().includes(q) || j.machines?.some(m => m.description?.toLowerCase().includes(q));
-    const mst= !st || j.machines?.some(m => m.status === st);
-    const msf= !sf || j.machines?.some(m => m.assigned_to === sf);
-    return ms && mst && msf;
+    const ms  = !q  || j.job_id?.toLowerCase().includes(q) || j.customer_name?.toLowerCase().includes(q) || j.machines?.some(m => m.description?.toLowerCase().includes(q));
+    const mst = !st || j.machines?.some(m => m.status === st);
+    const msf = !sf || j.machines?.some(m => m.assigned_to === sf);
+    // Staff "assigned to me" filter
+    const mine = (staffFilterMode !== 'mine') || j.has_mine;
+    return ms && mst && msf && mine;
   });
   if (currentTab === 'active') renderJobs(filteredJobs, 'jobs-container');
+}
+
+function toggleMyFilter() {
+  staffFilterMode = staffFilterMode === 'all' ? 'mine' : 'all';
+  const btn = document.getElementById('my-filter-btn');
+  if (btn) {
+    if (staffFilterMode === 'mine') {
+      btn.className = 'text-xs px-3 py-1.5 rounded-full font-semibold bg-blue-600 text-white';
+      btn.textContent = '✓ My Jobs Only';
+    } else {
+      btn.className = 'text-xs px-3 py-1.5 rounded-full font-semibold border border-blue-300 text-blue-600 hover:bg-blue-50';
+      btn.textContent = '🔧 Assigned to Me';
+    }
+  }
+  filterJobs();
 }
 
 function filterDelivered() {
@@ -337,16 +372,27 @@ function buildJobCard(job) {
   const mobileHtml = isAdmin && job.customer_mobile ? `<span class="text-xs text-gray-400">${job.customer_mobile}</span>` : '';
   const addrHtml   = isAdmin && job.customer_address ? `<span class="text-xs text-gray-400">${job.customer_address}</span>` : '';
 
+  // Staff: highlight if any machine is assigned to me
+  const mineIndicator = (!isAdmin && job.has_mine)
+    ? `<span class="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full font-semibold">📌 Has my work</span>`
+    : '';
+
   const editBtn   = isAdmin ? `<button onclick="openEditJob('${job.job_id}')" class="action-btn bg-yellow-50 text-yellow-600 hover:bg-yellow-100" title="Edit"><i class="fas fa-edit text-xs"></i></button>` : '';
   const deleteBtn = isAdmin && userEmail === OWNER_EMAIL ? `<button onclick="deleteJob('${job.job_id}')" class="action-btn bg-red-50 text-red-500 hover:bg-red-100" title="Delete"><i class="fas fa-trash text-xs"></i></button>` : '';
   const addMachBtn= isAdmin ? `<button onclick="openAddMachine('${job.job_id}')" class="action-btn-sm bg-blue-50 text-blue-600 hover:bg-blue-100"><i class="fas fa-plus text-xs"></i> Machine</button>` : '';
   const deliverBtn= isAdmin && !allDelivered && job.all_repaired && machines.length > 0
     ? `<button onclick="openDelivery('${job.job_id}')" class="action-btn-sm bg-indigo-600 text-white hover:bg-indigo-700"><i class="fas fa-truck text-xs"></i> Deliver</button>` : '';
 
-  // WhatsApp share buttons (admin only)
-  const waRegBtn  = isAdmin ? `<button onclick="shareWhatsApp('${job.job_id}','register')" class="action-btn-sm bg-green-600 text-white hover:bg-green-700" title="Share registration message"><i class="fab fa-whatsapp text-xs"></i> Register</button>` : '';
-  const waDelBtn  = isAdmin && allDelivered ? `<button onclick="shareWhatsApp('${job.job_id}','delivered')" class="action-btn-sm bg-green-700 text-white hover:bg-green-800" title="Share delivery message"><i class="fab fa-whatsapp text-xs"></i> Delivered</button>` : '';
-  const jpgBtn    = isAdmin ? `<button onclick="generateJobCardImage('${job.job_id}')" class="action-btn-sm bg-purple-50 text-purple-600 hover:bg-purple-100"><i class="fas fa-image text-xs"></i> JPG</button>` : '';
+  // WhatsApp share buttons — always visible for admin, no environment checks needed
+  const waRegBtn = isAdmin
+    ? `<button onclick="shareWhatsApp('${job.job_id}','register')" class="action-btn-sm bg-green-600 text-white hover:bg-green-700" title="Share registration via WhatsApp"><i class="fab fa-whatsapp text-xs"></i> Register</button>`
+    : '';
+  const waDelBtn = isAdmin && allDelivered
+    ? `<button onclick="shareWhatsApp('${job.job_id}','delivered')" class="action-btn-sm bg-green-700 text-white hover:bg-green-800" title="Share delivered message via WhatsApp"><i class="fab fa-whatsapp text-xs"></i> Delivered</button>`
+    : '';
+  const jpgBtn = isAdmin
+    ? `<button onclick="generateJobCardImage('${job.job_id}')" class="action-btn-sm bg-purple-50 text-purple-600 hover:bg-purple-100"><i class="fas fa-image text-xs"></i> JPG</button>`
+    : '';
 
   const cardBg = allDelivered ? 'job-card-delivered' : 'bg-white';
 
@@ -357,6 +403,7 @@ function buildJobCard(job) {
           <span class="font-black text-blue-600 text-base">${job.job_id}</span>
           ${allDelivered ? `<span class="status-badge status-delivered">🔵 Delivered</span>` : ''}
           ${job.all_repaired && !allDelivered ? `<span class="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full font-semibold">Ready to deliver</span>` : ''}
+          ${mineIndicator}
         </div>
         <p class="font-bold text-gray-800 text-sm">${job.customer_name}</p>
         <div class="flex flex-wrap gap-2 mt-0.5">${mobileHtml}${addrHtml}</div>
@@ -376,19 +423,28 @@ function buildJobCard(job) {
 
 function buildMachineRow(m, jobId) {
   const isAdmin    = userRole === 'admin';
+  const isMine     = m.is_mine || (m.assigned_to === staffName);
   const imgHtml    = m.image_data ? `<img src="${m.image_data}" class="thumb-img" onclick="viewImage('${m.image_data.replace(/'/g,"\\'")}')">` : '';
   const priceHtml  = isAdmin ? `<span class="text-xs text-gray-500">${fmtCurrency(m.unit_price||0)} × ${m.quantity||1} = ${fmtCurrency((m.unit_price||0)*(m.quantity||1))}</span>` : '';
-  const editBtn    = (isAdmin || m.assigned_to === staffName)
+
+  // Staff can edit if machine is assigned to them
+  const canEdit    = isAdmin || isMine;
+  const editBtn    = canEdit
     ? `<button onclick="openEditMachine('${jobId}','${m.id}')" class="action-btn-sm bg-gray-50 text-gray-600 hover:bg-gray-100"><i class="fas fa-edit text-xs"></i> Edit</button>` : '';
   const delBtn     = isAdmin && userEmail === OWNER_EMAIL
     ? `<button onclick="deleteMachine('${jobId}','${m.id}')" class="action-btn bg-red-50 text-red-400 hover:bg-red-100"><i class="fas fa-trash text-xs"></i></button>` : '';
   const assigned   = m.assigned_to ? `<span class="assigned-badge">${m.assigned_to}</span>` : '';
-  return `<div class="flex items-center gap-3 px-4 py-3" id="machine-row-${m.id}">
+
+  // Highlight row if this machine is mine (staff view)
+  const rowHighlight = (!isAdmin && isMine) ? 'style="background:#eff6ff;"' : '';
+
+  return `<div class="flex items-center gap-3 px-4 py-3" id="machine-row-${m.id}" ${rowHighlight}>
     ${imgHtml}
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2 flex-wrap">
         <span class="font-semibold text-gray-800 text-sm">${m.description}</span>
         ${statusBadge(m.status)}${assigned}
+        ${(!isAdmin && isMine) ? '<span class="text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded font-semibold">📌 Mine</span>' : ''}
       </div>
       ${m.condition_text ? `<p class="text-xs text-gray-400 mt-0.5">${m.condition_text}</p>` : ''}
       ${priceHtml}
@@ -481,7 +537,9 @@ let currentMachineJobId = null, currentMachineId = null;
 function openAddMachine(jobId) {
   currentMachineJobId = jobId; currentMachineId = null;
   document.getElementById('machine-modal-title').innerHTML = '<i class="fas fa-plus-circle text-blue-500 mr-2"></i>Add Machine';
-  ['machine-desc','machine-condition','machine-work-done','machine-return-reason'].forEach(id => { const el = document.getElementById(id); if (el) el.value=''; });
+  ['machine-desc','machine-condition','machine-work-done','machine-return-reason','machine-internal-notes'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value='';
+  });
   document.getElementById('machine-qty').value = '1';
   document.getElementById('machine-price').value = '0';
   document.getElementById('machine-assigned-to').value = '';
@@ -503,14 +561,17 @@ function openEditMachine(jobId, machineId) {
   const m   = job?.machines?.find(m => String(m.id) === String(machineId));
   if (!m) return;
   document.getElementById('machine-modal-title').innerHTML = '<i class="fas fa-edit text-yellow-500 mr-2"></i>Edit Machine';
-  document.getElementById('machine-desc').value          = m.description   || '';
-  document.getElementById('machine-condition').value     = m.condition_text|| '';
-  document.getElementById('machine-qty').value           = m.quantity       || 1;
-  document.getElementById('machine-price').value         = m.unit_price     || 0;
-  document.getElementById('machine-assigned-to').value   = m.assigned_to   || '';
-  document.getElementById('machine-status').value        = m.status         || 'Under Repair';
-  document.getElementById('machine-work-done').value     = m.work_done      || '';
-  document.getElementById('machine-return-reason').value = m.return_reason  || '';
+  document.getElementById('machine-desc').value          = m.description    || '';
+  document.getElementById('machine-condition').value     = m.condition_text  || '';
+  document.getElementById('machine-qty').value           = m.quantity        || 1;
+  document.getElementById('machine-price').value         = m.unit_price      || 0;
+  document.getElementById('machine-assigned-to').value   = m.assigned_to    || '';
+  document.getElementById('machine-status').value        = m.status          || 'Under Repair';
+  document.getElementById('machine-work-done').value     = m.work_done       || '';
+  document.getElementById('machine-return-reason').value = m.return_reason   || '';
+  const internalNotes = document.getElementById('machine-internal-notes');
+  if (internalNotes) internalNotes.value = m.internal_notes || '';
+
   const isAdmin = userRole === 'admin';
   document.getElementById('price-qty-row').classList.toggle('hidden', !isAdmin);
   document.getElementById('assigned-to-row').classList.toggle('hidden', !isAdmin);
@@ -537,8 +598,8 @@ async function handleImageUpload(input) {
   const preview   = document.getElementById('machine-image-preview');
   const container = document.getElementById('image-preview-container');
   const removeBtn = document.getElementById('remove-image-btn');
-  // High quality compression: 1400px max, 90% quality for better WhatsApp images
-  const b64 = await compressImageToBase64(file, 1400, 0.90);
+  // High quality compression: max 1400px, 92% quality
+  const b64 = await compressImageToBase64(file, 1400, 0.92);
   preview.src = b64; preview.classList.remove('hidden');
   container.classList.add('hidden'); removeBtn.classList.remove('hidden');
 }
@@ -572,23 +633,31 @@ function compressImageToBase64(file, maxDim, quality) {
 }
 
 async function saveMachine() {
-  const desc        = document.getElementById('machine-desc').value.trim();
-  const status      = document.getElementById('machine-status').value;
-  const workDone    = document.getElementById('machine-work-done').value.trim();
-  const returnReason= document.getElementById('machine-return-reason').value.trim();
+  const desc         = document.getElementById('machine-desc').value.trim();
+  const status       = document.getElementById('machine-status').value;
+  const workDone     = document.getElementById('machine-work-done').value.trim();
+  const returnReason = document.getElementById('machine-return-reason').value.trim();
   if (!desc) { showToast('Description required', 'error'); return; }
   if (status === 'Repaired' && !workDone)     { showToast('Work done is required for Repaired status', 'error'); return; }
   if (status === 'Return'   && !returnReason) { showToast('Return reason is required', 'error'); return; }
-  const imgEl  = document.getElementById('machine-image-preview');
-  const imgData= imgEl.classList.contains('hidden') ? null : (imgEl.src || null);
-  const body   = {
+
+  const imgEl   = document.getElementById('machine-image-preview');
+  const imgData = imgEl.classList.contains('hidden') ? null : (imgEl.src || null);
+  // Clean up if it's an empty src
+  const cleanImg = imgData && imgData.length > 50 ? imgData : null;
+
+  const body = {
     description:    desc,
     condition_text: document.getElementById('machine-condition').value.trim() || null,
     quantity:       parseInt(document.getElementById('machine-qty').value) || 1,
     unit_price:     parseFloat(document.getElementById('machine-price').value) || 0,
-    assigned_to:    document.getElementById('machine-assigned-to').value || null,
-    status, work_done: workDone || null, return_reason: returnReason || null, image_data: imgData
+    assigned_to:    document.getElementById('machine-assigned-to').value.trim() || null,
+    status,
+    work_done:      workDone     || null,
+    return_reason:  returnReason || null,
+    image_data:     cleanImg
   };
+
   const spinner = document.getElementById('machine-save-spinner');
   const btnText = document.getElementById('machine-save-btn-text');
   spinner.classList.remove('hidden'); btnText.textContent = 'Saving…';
@@ -600,15 +669,17 @@ async function saveMachine() {
       resp = await apiFetch(`/api/jobs/${currentMachineJobId}/machines`, { method:'POST', body: JSON.stringify(body) });
     }
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || data.detail || 'Failed to save');
+    if (!resp.ok) throw new Error(data.error || data.detail || 'Failed to save machine');
+    // Response: { success: true, machine: {...} } for both POST and PUT
     closeModal('machine-modal');
-    showToast(currentMachineId ? 'Machine updated' : 'Machine added', 'success');
+    showToast(currentMachineId ? 'Machine updated ✓' : 'Machine added ✓', 'success');
     await loadJobs();
   } catch (err) {
     if (err.message === 'offline_queued') { closeModal('machine-modal'); showToast('Queued for sync', 'warning'); }
-    else showToast(err.message || 'Failed', 'error');
+    else showToast(err.message || 'Failed to save machine', 'error');
   } finally {
-    spinner.classList.add('hidden'); btnText.textContent = currentMachineId ? 'Save Changes' : 'Add Machine';
+    spinner.classList.add('hidden');
+    btnText.textContent = currentMachineId ? 'Save Changes' : 'Add Machine';
   }
 }
 
@@ -627,11 +698,15 @@ function viewImage(src) { document.getElementById('image-viewer-img').src = src;
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DELIVERY
+   Courier service & tracking are now optional (previously required)
 ───────────────────────────────────────────────────────────────────────────── */
 function openDelivery(jobId) {
   document.getElementById('delivery-job-id').value = jobId;
   document.getElementById('delivery-job-id-label').textContent = jobId;
-  ['delivery-name','delivery-mobile','delivery-relation','delivery-service','delivery-tracking','delivery-driver','delivery-driver-contact'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  ['delivery-name','delivery-mobile','delivery-relation',
+   'delivery-service','delivery-tracking','delivery-driver','delivery-driver-contact'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
   setDeliveryType('in_person');
   openModal('delivery-modal');
 }
@@ -656,26 +731,39 @@ async function confirmDelivery() {
   const type  = document.getElementById('delivery-type').value;
   let delivery_info;
   if (type === 'in_person') {
-    delivery_info = { type:'in_person', name: document.getElementById('delivery-name').value.trim(), mobile: document.getElementById('delivery-mobile').value.trim(), relation: document.getElementById('delivery-relation').value.trim() };
+    delivery_info = {
+      type:     'in_person',
+      name:     document.getElementById('delivery-name').value.trim()            || null,
+      mobile:   document.getElementById('delivery-mobile').value.trim()          || null,
+      relation: document.getElementById('delivery-relation').value.trim()        || null
+    };
   } else {
-    const service  = document.getElementById('delivery-service').value.trim();
-    const tracking = document.getElementById('delivery-tracking').value.trim();
-    if (!service || !tracking) { showToast('Service and tracking ID required', 'error'); return; }
-    delivery_info = { type:'courier', service, tracking_id: tracking, driver: document.getElementById('delivery-driver').value.trim(), driver_contact: document.getElementById('delivery-driver-contact').value.trim() };
+    // Courier: service & tracking are now optional
+    const service  = document.getElementById('delivery-service').value.trim()       || null;
+    const tracking = document.getElementById('delivery-tracking').value.trim()      || null;
+    const driver   = document.getElementById('delivery-driver').value.trim()        || null;
+    const dContact = document.getElementById('delivery-driver-contact').value.trim()|| null;
+    delivery_info = { type: 'courier', service, tracking_id: tracking, driver, driver_contact: dContact };
   }
+  const btnText = 'Confirm Delivery';
+  const btn     = document.querySelector('#delivery-modal button[onclick="confirmDelivery()"]');
+  if (btn) btn.disabled = true;
   try {
     const resp = await apiFetch(`/api/jobs/${jobId}/deliver`, { method:'POST', body: JSON.stringify({ delivery_info }) });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || data.detail || 'Delivery failed');
-    closeModal('delivery-modal'); showToast(`${jobId} delivered!`, 'success'); await loadJobs();
+    closeModal('delivery-modal'); showToast(`${jobId} delivered! 🎉`, 'success'); await loadJobs();
   } catch (err) { showToast(err.message || 'Delivery failed', 'error'); }
+  finally { if (btn) btn.disabled = false; }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   WHATSAPP SHARING — Web Share API (no gallery save, no paid API)
+   WHATSAPP SHARING — Web Share API with file attachment
+   Works on: Chrome Android, Safari iOS 15+, Edge Android
+   Fallback: Desktop — copies text to clipboard + downloads image
+   No environment checks — always shows buttons
 ───────────────────────────────────────────────────────────────────────────── */
 
-/** Build the WhatsApp text for registration */
 function buildRegisterMessage(job) {
   return `🌟 Dear Customer,
 
@@ -694,7 +782,6 @@ Operations Manager
 📍 Gheekanta, Ahmedabad`;
 }
 
-/** Build the WhatsApp text for delivered */
 function buildDeliveredMessage(job) {
   return `🌟 Dear Customer,
 
@@ -707,53 +794,65 @@ function buildDeliveredMessage(job) {
 📍 Gheekanta, Ahmedabad`;
 }
 
-/** Main WhatsApp share handler */
 async function shareWhatsApp(jobId, type) {
   const job = allJobs.find(j => j.job_id === jobId) || deliveredJobs.find(j => j.job_id === jobId);
   if (!job) { showToast('Job not found', 'error'); return; }
 
-  const text = type === 'register' ? buildRegisterMessage(job) : buildDeliveredMessage(job);
+  const text     = type === 'register' ? buildRegisterMessage(job) : buildDeliveredMessage(job);
+  const fileName = `Job_${jobId}.jpg`;
 
   // Show spinner
-  const spinner = document.getElementById('print-spinner');
-  const spinnerText = spinner.querySelector('p');
-  if (spinnerText) spinnerText.textContent = 'Preparing WhatsApp share…';
-  spinner.classList.remove('hidden');
+  const spinner    = document.getElementById('print-spinner');
+  const spinnerMsg = spinner ? spinner.querySelector('p') : null;
+  if (spinnerMsg) spinnerMsg.textContent = 'Preparing WhatsApp share…';
+  if (spinner)    spinner.classList.remove('hidden');
 
   try {
-    // Ensure html2canvas is loaded
     await loadHtml2Canvas();
-
-    // Generate job card as blob
     const blob = await generateJobCardBlob(job);
-    const fileName = `Job_${jobId}.jpg`;
+    if (spinner) spinner.classList.add('hidden');
+
     const file = new File([blob], fileName, { type: 'image/jpeg' });
 
-    spinner.classList.add('hidden');
-
-    // Check if Web Share API supports files
+    // Try Web Share API with file (works on Chrome Android, Safari iOS 15+)
     if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        title: `Job Card ${jobId} — ADITION ELECTRIC SOLUTION`,
-        text:  text,
-        files: [file]
-      });
-      showToast('Shared via WhatsApp!', 'success');
-    } else if (navigator.share) {
-      // Share text only (fallback for browsers that don't support file sharing)
-      await navigator.share({ title: `Job Card ${jobId}`, text: text });
-      showToast('Text shared! (Image sharing not supported on this browser)', 'info', 5000);
-    } else {
-      // Desktop fallback: copy message + download image
-      await copyToClipboard(text);
-      downloadBlob(blob, fileName);
-      showToast('Message copied + image downloaded. Paste in WhatsApp!', 'info', 6000);
+      try {
+        await navigator.share({
+          title: `Job Card ${jobId} — ADITION ELECTRIC SOLUTION`,
+          text,
+          files: [file]
+        });
+        return; // Success — no toast needed (user completed share)
+      } catch (shareErr) {
+        if (shareErr.name === 'AbortError') return; // User cancelled
+        // Fall through to text-only share
+      }
     }
+
+    // Try Web Share API text only (share sheet opens, user picks WhatsApp)
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: `Job Card ${jobId}`, text });
+        // Also download the image so user can attach manually
+        downloadBlob(blob, fileName);
+        showToast('Image downloaded — attach it in WhatsApp', 'info', 5000);
+        return;
+      } catch (shareErr) {
+        if (shareErr.name === 'AbortError') return;
+        // Fall through to desktop fallback
+      }
+    }
+
+    // Desktop fallback: copy text + download image
+    await copyToClipboard(text);
+    downloadBlob(blob, fileName);
+    showToast('✓ Message copied + image downloaded! Paste in WhatsApp.', 'info', 6000);
+
   } catch (err) {
-    spinner.classList.add('hidden');
-    if (err.name === 'AbortError') return; // User cancelled — no toast needed
-    console.error('Share error:', err);
-    showToast('Share failed: ' + (err.message || 'unknown'), 'error');
+    if (spinner) spinner.classList.add('hidden');
+    if (err.name === 'AbortError') return;
+    console.error('WhatsApp share error:', err);
+    showToast('Share failed: ' + (err.message || 'unknown error'), 'error');
   }
 }
 
@@ -761,10 +860,11 @@ async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    // Fallback
     const ta = document.createElement('textarea');
-    ta.value = text; document.body.appendChild(ta); ta.select();
-    document.execCommand('copy'); document.body.removeChild(ta);
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
   }
 }
 function downloadBlob(blob, filename) {
@@ -774,7 +874,12 @@ function downloadBlob(blob, filename) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   JPG JOB CARD GENERATION (high-res, 4x scale)
+   JPG JOB CARD GENERATION
+   - 4× scale (very high res for WhatsApp)
+   - Delivery details shown only if filled
+   - No signature sections
+   - Footer: "Subjected to Ahmedabad jurisdiction only"
+   - Branding: ADITION ELECTRIC SOLUTION
 ───────────────────────────────────────────────────────────────────────────── */
 function buildJobCardHTML(job) {
   const machines   = job.machines || [];
@@ -784,7 +889,9 @@ function buildJobCardHTML(job) {
 
   const machineRows = machines.map((m, i) => {
     const sColor = { 'Under Repair':'#dc2626','Repaired':'#16a34a','Return':'#b45309','Delivered':'#4338ca' }[m.status] || '#374151';
-    const imgTag  = m.image_data ? `<img src="${m.image_data}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid #e2e8f0;" />` : '';
+    const imgTag  = m.image_data
+      ? `<img src="${m.image_data}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid #e2e8f0;" />`
+      : '';
     return `<tr style="border-bottom:1px solid #e5e7eb;">
       <td style="padding:12px 8px;vertical-align:top;font-size:14px;color:#374151;font-weight:700;">${i+1}.</td>
       <td style="padding:12px 8px;vertical-align:top;">
@@ -803,6 +910,7 @@ function buildJobCardHTML(job) {
     </tr>`;
   }).join('');
 
+  // Delivery block — only show fields that have actual values
   const deliveryBlock = (() => {
     if (!job.all_delivered) return '';
     const m = machines.find(m => m.delivery_info);
@@ -810,8 +918,24 @@ function buildJobCardHTML(job) {
     try {
       const di = typeof m.delivery_info === 'string' ? JSON.parse(m.delivery_info) : m.delivery_info;
       if (!di) return '';
-      if (di.type === 'in_person') return `<div style="background:#f0fdf4;border-radius:10px;padding:12px 16px;margin-top:14px;font-size:13px;color:#166534;"><strong>✅ Delivered In Person</strong>${di.name?` · ${di.name}`:''}${di.relation?` (${di.relation})`:''}${di.mobile?` · ${di.mobile}`:''}</div>`;
-      return `<div style="background:#eff6ff;border-radius:10px;padding:12px 16px;margin-top:14px;font-size:13px;color:#1e40af;"><strong>📦 Courier: ${di.service||''}</strong> · Tracking: ${di.tracking_id||''}</div>`;
+      if (di.type === 'in_person') {
+        const parts = [];
+        if (di.name)     parts.push(di.name);
+        if (di.relation) parts.push(`(${di.relation})`);
+        if (di.mobile)   parts.push(di.mobile);
+        const detail = parts.length ? ` — ${parts.join(' · ')}` : '';
+        return `<div style="background:#f0fdf4;border-radius:10px;padding:12px 16px;margin-top:14px;font-size:13px;color:#166534;">
+          <strong>✅ Delivered In Person</strong>${detail}
+        </div>`;
+      }
+      // Courier — only show filled fields
+      const parts = [];
+      if (di.service)     parts.push(`<strong>📦 ${di.service}</strong>`);
+      if (di.tracking_id) parts.push(`Tracking: ${di.tracking_id}`);
+      if (di.driver)      parts.push(`Driver: ${di.driver}`);
+      if (di.driver_contact) parts.push(`Contact: ${di.driver_contact}`);
+      if (!parts.length) return `<div style="background:#eff6ff;border-radius:10px;padding:12px 16px;margin-top:14px;font-size:13px;color:#1e40af;"><strong>📦 Delivered via Courier</strong></div>`;
+      return `<div style="background:#eff6ff;border-radius:10px;padding:12px 16px;margin-top:14px;font-size:13px;color:#1e40af;">${parts.join(' · ')}</div>`;
     } catch { return ''; }
   })();
 
@@ -823,16 +947,16 @@ function buildJobCardHTML(job) {
   <!-- HEADER -->
   <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:18px;border-bottom:3px solid #1e40af;margin-bottom:22px;">
     <div style="display:flex;align-items:center;gap:14px;">
-      <div style="width:52px;height:52px;background:#1e40af;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:28px;">⚡</div>
+      <div style="width:56px;height:56px;background:#1e40af;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:30px;">⚡</div>
       <div>
-        <div style="font-size:26px;font-weight:900;color:#1e40af;letter-spacing:-0.5px;line-height:1.1;">adition</div>
-        <div style="font-size:11px;color:#64748b;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">ADITION ELECTRIC SOLUTION</div>
-        <div style="font-size:10px;color:#94a3b8;">Gheekanta, Ahmedabad</div>
+        <div style="font-size:28px;font-weight:900;color:#1e40af;letter-spacing:-0.5px;line-height:1.1;">adition</div>
+        <div style="font-size:12px;color:#64748b;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">ADITION ELECTRIC SOLUTION</div>
+        <div style="font-size:10px;color:#94a3b8;">Gheekanta, Ahmedabad · Since 1984</div>
       </div>
     </div>
     <div style="text-align:right;">
       <div style="font-size:13px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;">JOB CARD</div>
-      <div style="font-size:30px;font-weight:900;color:#1e40af;line-height:1.1;">${job.job_id}</div>
+      <div style="font-size:32px;font-weight:900;color:#1e40af;line-height:1.1;">${job.job_id}</div>
       <div style="font-size:12px;color:#64748b;margin-top:2px;">Date: ${printDate}</div>
     </div>
   </div>
@@ -882,38 +1006,41 @@ function buildJobCardHTML(job) {
 
   ${deliveryBlock}
 
-  <!-- FOOTER -->
-  <div style="border-top:1px solid #e2e8f0;padding-top:14px;margin-top:14px;text-align:center;">
-    <div style="font-size:11px;color:#475569;font-weight:600;">Subjected to Ahmedabad jurisdiction only</div>
-    <div style="font-size:10px;color:#94a3b8;margin-top:4px;">ADITION ELECTRIC SOLUTION · Gheekanta, Ahmedabad · Since 1984 · adition™</div>
+  <!-- FOOTER — no signature lines -->
+  <div style="border-top:2px solid #e2e8f0;padding-top:16px;margin-top:18px;text-align:center;">
+    <div style="font-size:12px;color:#374151;font-weight:700;margin-bottom:4px;">Subjected to Ahmedabad jurisdiction only</div>
+    <div style="font-size:10px;color:#94a3b8;">ADITION ELECTRIC SOLUTION · Gheekanta, Ahmedabad · Since 1984 · adition™</div>
   </div>
 
 </div></body></html>`;
 }
 
-/** Generate a high-res blob (used for both download and WhatsApp share) */
+/** Generate a high-res blob (used for WhatsApp share + download) */
 async function generateJobCardBlob(job) {
   await loadHtml2Canvas();
   return new Promise(async (resolve, reject) => {
-    const html = buildJobCardHTML(job);
+    const html    = buildJobCardHTML(job);
     const wrapper = document.createElement('div');
     wrapper.style.cssText = 'position:fixed;left:-9999px;top:0;z-index:-1;background:white;';
     wrapper.innerHTML = html;
     document.body.appendChild(wrapper);
-    const target = wrapper.querySelector('#card') || wrapper.querySelector('div');
-    // Wait for images to load
+    const target = wrapper.querySelector('#card') || wrapper.firstElementChild;
+    // Wait for images
     const imgs = Array.from(wrapper.querySelectorAll('img'));
-    await Promise.all(imgs.map(img => new Promise(r => { if (img.complete) r(); else { img.onload = r; img.onerror = r; } })));
+    await Promise.all(imgs.map(img => new Promise(r => {
+      if (img.complete) r();
+      else { img.onload = r; img.onerror = r; }
+    })));
     try {
       const canvas = await html2canvas(target, {
-        scale: 4,             // 4x = very high resolution, great for WhatsApp
-        useCORS: true,
-        allowTaint: true,
+        scale:           4,        // 4× = very high resolution
+        useCORS:         true,
+        allowTaint:      true,
         backgroundColor: '#ffffff',
-        logging: false,
-        width: 760,
-        windowWidth: 800,
-        imageTimeout: 15000,
+        logging:         false,
+        width:           760,
+        windowWidth:     800,
+        imageTimeout:    15000,
       });
       canvas.toBlob(blob => {
         document.body.removeChild(wrapper);
@@ -921,20 +1048,20 @@ async function generateJobCardBlob(job) {
         else reject(new Error('Canvas toBlob returned null'));
       }, 'image/jpeg', 0.95);
     } catch (err) {
-      document.body.removeChild(wrapper);
+      if (document.body.contains(wrapper)) document.body.removeChild(wrapper);
       reject(err);
     }
   });
 }
 
-/** Called from the JPG button — download the image */
+/** JPG button — download the card */
 async function generateJobCardImage(jobId) {
   const job = allJobs.find(j => j.job_id === jobId) || deliveredJobs.find(j => j.job_id === jobId);
   if (!job) return;
-  const spinner = document.getElementById('print-spinner');
-  const spinnerMsg = spinner.querySelector('p');
+  const spinner    = document.getElementById('print-spinner');
+  const spinnerMsg = spinner?.querySelector('p');
   if (spinnerMsg) spinnerMsg.textContent = 'Generating high-res image…';
-  spinner.classList.remove('hidden');
+  if (spinner)    spinner.classList.remove('hidden');
   try {
     await loadHtml2Canvas();
     const blob = await generateJobCardBlob(job);
@@ -942,13 +1069,12 @@ async function generateJobCardImage(jobId) {
     showToast('Job card saved!', 'success');
   } catch (err) {
     console.error('JPG error:', err);
-    // Fallback: open HTML in new window
     const html = buildJobCardHTML(job);
     const win  = window.open('', '_blank');
-    win.document.write(html); win.document.close();
+    if (win) { win.document.write(html); win.document.close(); }
     showToast('Opened in new tab — right-click → Save as image', 'info', 6000);
   } finally {
-    spinner.classList.add('hidden');
+    if (spinner) spinner.classList.add('hidden');
   }
 }
 
@@ -969,7 +1095,7 @@ function setupAutocomplete(mobileId, nameId, addressId) {
     } catch { closeAutocomplete(); }
   };
   mobileEl.addEventListener('input', () => doSearch(mobileEl.value.trim()));
-  nameEl?.addEventListener('input', () => doSearch(nameEl.value.trim()));
+  nameEl?.addEventListener('input',  () => doSearch(nameEl.value.trim()));
 }
 function showAutocomplete(results, mobileId, nameId, addressId) {
   const dd = document.getElementById('autocomplete-dropdown'); if (!dd) return;
@@ -986,9 +1112,9 @@ function showAutocomplete(results, mobileId, nameId, addressId) {
 }
 function selectCustomer(c, mobileId, nameId, addressId) {
   const mel = document.getElementById(mobileId), nel = document.getElementById(nameId), ael = document.getElementById(addressId);
-  if (mel) mel.value = c.mobile || '';
-  if (nel) nel.value = c.name   || '';
-  if (ael) ael.value = c.address|| '';
+  if (mel) mel.value = c.mobile  || '';
+  if (nel) nel.value = c.name    || '';
+  if (ael) ael.value = c.address || '';
   closeAutocomplete();
 }
 function closeAutocomplete() { const d = document.getElementById('autocomplete-dropdown'); if (d) d.classList.add('hidden'); }
@@ -1039,7 +1165,7 @@ async function exportData() {
 
 async function handleRestoreCsv(input) {
   const file = input.files[0]; if (!file) return;
-  const text = await file.text();
+  const text  = await file.text();
   const lines = text.split('\n').filter(l => l.trim());
   const headers = lines[0].split(',').map(h => h.replace(/"/g,'').trim());
   const jobs = {}, machines = [];
@@ -1181,7 +1307,7 @@ function loadHtml2Canvas() {
     if (typeof html2canvas !== 'undefined') { resolve(); return; }
     const s = document.createElement('script');
     s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
-    s.onload = resolve; s.onerror = resolve;
+    s.onload = resolve; s.onerror = resolve; // resolve even on error so we handle gracefully
     document.head.appendChild(s);
   });
 }

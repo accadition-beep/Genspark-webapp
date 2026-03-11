@@ -27,7 +27,7 @@ jobs.use('/*', async (c, next) => {
 })
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function sanitizeMachine(m: any, role: string) {
+function sanitizeMachine(m: any, role: string, staffName?: string) {
   const out: any = { ...m }
   if (role !== 'admin') {
     delete out.unit_price
@@ -35,41 +35,68 @@ function sanitizeMachine(m: any, role: string) {
     delete out.delivered_at
     delete out.return_reason
     if (out.status === 'Delivered') out.status = 'Repaired'
+    // Mark if assigned to this staff member
+    out.is_mine = out.assigned_to === staffName
   }
   return out
 }
 
-function sanitizeJob(job: any, machines: any[], role: string) {
-  const sm         = machines.map(m => sanitizeMachine(m, role))
+function sanitizeJob(job: any, machines: any[], role: string, staffName?: string) {
+  const sm         = machines.map(m => sanitizeMachine(m, role, staffName))
   const grandTotal = machines.reduce((s, m) => s + (m.quantity || 1) * (m.unit_price || 0), 0)
   const allDone    = machines.length > 0 && machines.every(m => ['Repaired','Return','Delivered'].includes(m.status))
   const allDelivered = machines.length > 0 && machines.every(m => m.status === 'Delivered')
   const out: any   = { ...job, machines: sm, machine_count: machines.length, all_repaired: allDone, all_delivered: allDelivered }
-  if (role !== 'admin') { delete out.customer_mobile; delete out.customer_address; delete out.amount_received }
-  else { out.grand_total = grandTotal; out.balance = grandTotal - (job.amount_received || 0) }
+  if (role !== 'admin') {
+    delete out.customer_mobile
+    delete out.customer_address
+    delete out.amount_received
+    // Mark if any machine is assigned to this staff
+    out.has_mine = machines.some(m => m.assigned_to === staffName)
+  } else {
+    out.grand_total = grandTotal
+    out.balance = grandTotal - (job.amount_received || 0)
+  }
   return out
 }
 
 // ── GET /api/jobs ────────────────────────────────────────────────────────────
+// Staff now sees ALL active jobs (not just assigned ones)
+// Delivered jobs are admin-only
 jobs.get('/', async (c) => {
   try {
-    const db = c.env.DB; const role = c.get('role'); const staffName = c.get('staff_name')
+    const db = c.env.DB
+    const role = c.get('role')
+    const staffName = c.get('staff_name')
+
     let jobRows: any, machineRows: any
+
     if (role === 'admin') {
+      // Admin: all jobs including delivered
       jobRows     = await db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all()
       machineRows = await db.prepare('SELECT * FROM machines ORDER BY created_at ASC').all()
     } else {
+      // Staff: ALL active jobs (any machine not delivered)
+      // Job appears if it has at least one non-delivered machine
       jobRows = await db.prepare(
-        `SELECT DISTINCT j.* FROM jobs j INNER JOIN machines m ON m.job_id = j.job_id
-         WHERE m.assigned_to = ? AND m.status != 'Delivered' ORDER BY j.created_at DESC`
-      ).bind(staffName).all()
+        `SELECT DISTINCT j.* FROM jobs j
+         INNER JOIN machines m ON m.job_id = j.job_id
+         WHERE m.status != 'Delivered'
+         ORDER BY j.created_at DESC`
+      ).all()
+      // Return ALL machines for those jobs so they can see full context
+      // but filter to only active machines
       machineRows = await db.prepare(
-        `SELECT * FROM machines WHERE assigned_to = ? AND status != 'Delivered' ORDER BY created_at ASC`
-      ).bind(staffName).all()
+        `SELECT m.* FROM machines m
+         INNER JOIN jobs j ON j.job_id = m.job_id
+         WHERE m.status != 'Delivered'
+         ORDER BY m.created_at ASC`
+      ).all()
     }
+
     const jobList = (jobRows.results as any[]).map((job: any) => {
       const machines = (machineRows.results as any[]).filter((m: any) => m.job_id === job.job_id)
-      return sanitizeJob(job, machines, role)
+      return sanitizeJob(job, machines, role, staffName)
     })
     return c.json(jobList)
   } catch (err: any) {
@@ -100,19 +127,23 @@ jobs.get('/all', async (c) => {
 // ── GET /api/jobs/:jobId ─────────────────────────────────────────────────────
 jobs.get('/:jobId', async (c) => {
   try {
-    const db = c.env.DB; const role = c.get('role'); const staffName = c.get('staff_name')
+    const db = c.env.DB
+    const role = c.get('role')
+    const staffName = c.get('staff_name')
     const jobId = c.req.param('jobId')
     const job = await db.prepare('SELECT * FROM jobs WHERE job_id = ?').bind(jobId).first()
     if (!job) return c.json({ error: 'Not found' }, 404)
+
     let mq: any
     if (role === 'admin') {
       mq = await db.prepare('SELECT * FROM machines WHERE job_id = ? ORDER BY created_at ASC').bind(jobId).all()
     } else {
+      // Staff sees all active machines on this job
       mq = await db.prepare(
-        `SELECT * FROM machines WHERE job_id = ? AND assigned_to = ? AND status != 'Delivered' ORDER BY created_at ASC`
-      ).bind(jobId, staffName).all()
+        `SELECT * FROM machines WHERE job_id = ? AND status != 'Delivered' ORDER BY created_at ASC`
+      ).bind(jobId).all()
     }
-    return c.json(sanitizeJob(job, mq.results, role))
+    return c.json(sanitizeJob(job, mq.results, role, staffName))
   } catch (err: any) {
     return c.json({ error: 'Failed to load job', detail: err?.message || 'unknown' }, 500)
   }
@@ -152,7 +183,8 @@ jobs.post('/', async (c) => {
 jobs.put('/:jobId', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ error: 'Admin only' }, 403)
   try {
-    const db = c.env.DB; const jobId = c.req.param('jobId')
+    const db = c.env.DB
+    const jobId = c.req.param('jobId')
     const existing: any = await db.prepare('SELECT * FROM jobs WHERE job_id = ?').bind(jobId).first()
     if (!existing) return c.json({ error: 'Not found' }, 404)
     let body: any
@@ -179,7 +211,8 @@ jobs.delete('/:jobId', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ error: 'Admin only' }, 403)
   if (c.get('user') !== OWNER_EMAIL) return c.json({ error: 'Owner required' }, 403)
   try {
-    const db = c.env.DB; const jobId = c.req.param('jobId')
+    const db = c.env.DB
+    const jobId = c.req.param('jobId')
     await db.prepare('DELETE FROM machines WHERE job_id = ?').bind(jobId).run()
     await db.prepare('DELETE FROM jobs WHERE job_id = ?').bind(jobId).run()
     return c.json({ success: true })
@@ -192,27 +225,46 @@ jobs.delete('/:jobId', async (c) => {
 jobs.post('/:jobId/machines', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ error: 'Admin only' }, 403)
   try {
-    const db = c.env.DB; const jobId = c.req.param('jobId')
+    const db = c.env.DB
+    const jobId = c.req.param('jobId')
     let body: any
     try { body = await c.req.json() } catch { return c.json({ error: 'Invalid JSON body' }, 400) }
-    const { description, condition_text, image_data, quantity, unit_price, status, assigned_to, work_done, return_reason } = body
-    if (!description?.trim()) return c.json({ error: 'description required' }, 400)
+
+    // Safely extract all fields with defaults
+    const description    = (body.description    || '').toString().trim()
+    const condition_text = (body.condition_text  || '').toString().trim() || null
+    const image_data     = (body.image_data      || null)
+    const quantity       = Math.max(1, parseInt(body.quantity)   || 1)
+    const unit_price     = Math.max(0, parseFloat(body.unit_price) || 0)
+    const assigned_to    = (body.assigned_to     || '').toString().trim() || null
+    const work_done      = (body.work_done       || '').toString().trim() || null
+    const return_reason  = (body.return_reason   || '').toString().trim() || null
+    const status         = ALL_STATUSES.includes(body.status) ? body.status : 'Under Repair'
+
+    if (!description) return c.json({ error: 'description required' }, 400)
+
     // Ensure job exists
     const job = await db.prepare('SELECT job_id FROM jobs WHERE job_id = ?').bind(jobId).first()
     if (!job) return c.json({ error: `Job ${jobId} not found` }, 404)
-    const resolvedStatus = ALL_STATUSES.includes(status) ? status : 'Under Repair'
-    if (resolvedStatus === 'Repaired' && !work_done?.trim()) return c.json({ error: 'work_done required for Repaired status' }, 400)
-    if (resolvedStatus === 'Return'   && !return_reason?.trim()) return c.json({ error: 'return_reason required for Return status' }, 400)
+
+    // Validate status-dependent fields
+    if (status === 'Repaired' && !work_done) {
+      return c.json({ error: 'work_done is required when status is Repaired' }, 400)
+    }
+    if (status === 'Return' && !return_reason) {
+      return c.json({ error: 'return_reason is required when status is Return' }, 400)
+    }
+
     const result = await db.prepare(
-      `INSERT INTO machines (job_id,description,condition_text,image_data,quantity,unit_price,status,assigned_to,work_done,return_reason)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO machines (job_id, description, condition_text, image_data, quantity, unit_price, status, assigned_to, work_done, return_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
-      jobId, description.trim(), condition_text || null, image_data || null,
-      parseInt(quantity) || 1, parseFloat(unit_price) || 0,
-      resolvedStatus, assigned_to || null, work_done || null, return_reason || null
+      jobId, description, condition_text, image_data,
+      quantity, unit_price, status, assigned_to, work_done, return_reason
     ).run()
+
     const newMachine = await db.prepare('SELECT * FROM machines WHERE id = ?').bind(result.meta.last_row_id).first()
-    return c.json(newMachine, 201)
+    return c.json({ success: true, machine: newMachine }, 201)
   } catch (err: any) {
     return c.json({ error: 'Failed to add machine', detail: err?.message || 'unknown' }, 500)
   }
@@ -221,54 +273,86 @@ jobs.post('/:jobId/machines', async (c) => {
 // ── PUT /api/jobs/:jobId/machines/:machineId ─────────────────────────────────
 jobs.put('/:jobId/machines/:machineId', async (c) => {
   try {
-    const db = c.env.DB; const role = c.get('role'); const staffName = c.get('staff_name')
+    const db = c.env.DB
+    const role = c.get('role')
+    const staffName = c.get('staff_name')
     const machineId = c.req.param('machineId')
+
     let body: any
     try { body = await c.req.json() } catch { return c.json({ error: 'Invalid JSON body' }, 400) }
+
     const existing: any = await db.prepare('SELECT * FROM machines WHERE id = ?').bind(machineId).first()
     if (!existing) return c.json({ error: 'Machine not found' }, 404)
-    if (role !== 'admin' && existing.assigned_to !== staffName) return c.json({ error: 'Not assigned to you' }, 403)
 
-    let desc       = existing.description
-    let cond       = existing.condition_text
-    let img        = existing.image_data
-    let qty        = existing.quantity
-    let price      = existing.unit_price
-    let assignedTo = existing.assigned_to
-
-    if (role === 'admin') {
-      if (body.description  !== undefined) desc       = body.description?.trim() || existing.description
-      if (body.condition_text !== undefined) cond     = body.condition_text || null
-      if (body.image_data   !== undefined) img        = body.image_data || null
-      if (body.quantity     !== undefined) qty        = parseInt(body.quantity)  || existing.quantity
-      if (body.unit_price   !== undefined) price      = parseFloat(body.unit_price) || 0
-      if (body.assigned_to  !== undefined) assignedTo = body.assigned_to || null
+    // Staff can update if machine is assigned to them OR if machine is unassigned
+    if (role !== 'admin') {
+      const isAssignedToMe = existing.assigned_to === staffName
+      if (!isAssignedToMe) {
+        return c.json({ error: 'Not assigned to you' }, 403)
+      }
     }
 
+    // Start with existing values
+    let desc        = existing.description
+    let cond        = existing.condition_text
+    let img         = existing.image_data
+    let qty         = existing.quantity
+    let price       = existing.unit_price
+    let assignedTo  = existing.assigned_to
+
+    // Admin can update all fields
+    if (role === 'admin') {
+      if (body.description   !== undefined) desc       = (body.description   || '').toString().trim() || existing.description
+      if (body.condition_text !== undefined) cond      = (body.condition_text || '').toString().trim() || null
+      if (body.image_data    !== undefined) img        = body.image_data || null
+      if (body.quantity      !== undefined) qty        = Math.max(1, parseInt(body.quantity) || 1)
+      if (body.unit_price    !== undefined) price      = Math.max(0, parseFloat(body.unit_price) || 0)
+      if (body.assigned_to   !== undefined) assignedTo = (body.assigned_to || '').toString().trim() || null
+    }
+
+    // Both admin and staff can update status and work fields
     const allowedStatuses = role === 'admin' ? ALL_STATUSES : ACTIVE_STATUSES
-    let newStatus = body.status !== undefined ? body.status : existing.status
-    if (!allowedStatuses.includes(newStatus)) newStatus = existing.status
+    let newStatus = existing.status
+    if (body.status !== undefined) {
+      newStatus = allowedStatuses.includes(body.status) ? body.status : existing.status
+    }
 
-    const work_done     = body.work_done     !== undefined ? (body.work_done     || null) : existing.work_done
-    const return_reason = body.return_reason !== undefined ? (body.return_reason || null) : existing.return_reason
+    // work_done and return_reason
+    const work_done = body.work_done !== undefined
+      ? ((body.work_done || '').toString().trim() || null)
+      : existing.work_done
+    const return_reason = body.return_reason !== undefined
+      ? ((body.return_reason || '').toString().trim() || null)
+      : existing.return_reason
 
-    if (newStatus === 'Repaired' && !work_done?.trim())     return c.json({ error: 'work_done required for Repaired status' }, 400)
-    if (newStatus === 'Return'   && !return_reason?.trim()) return c.json({ error: 'return_reason required for Return status' }, 400)
+    // Validate status-dependent fields
+    if (newStatus === 'Repaired' && !work_done) {
+      return c.json({ error: 'work_done is required when status is Repaired' }, 400)
+    }
+    if (newStatus === 'Return' && !return_reason) {
+      return c.json({ error: 'return_reason is required when status is Return' }, 400)
+    }
 
+    // Delivery fields (admin only, when setting Delivered)
     let delivery_info = existing.delivery_info
     let delivered_at  = existing.delivered_at
     if (role === 'admin' && newStatus === 'Delivered') {
-      if (body.delivery_info) delivery_info = typeof body.delivery_info === 'string' ? body.delivery_info : JSON.stringify(body.delivery_info)
+      if (body.delivery_info !== undefined) {
+        delivery_info = typeof body.delivery_info === 'string'
+          ? body.delivery_info
+          : JSON.stringify(body.delivery_info)
+      }
       if (!delivered_at) delivered_at = new Date().toISOString()
     }
 
     await db.prepare(
-      `UPDATE machines SET description=?,condition_text=?,image_data=?,quantity=?,unit_price=?,status=?,
-       assigned_to=?,work_done=?,return_reason=?,delivery_info=?,delivered_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
+      `UPDATE machines SET description=?, condition_text=?, image_data=?, quantity=?, unit_price=?,
+       status=?, assigned_to=?, work_done=?, return_reason=?, delivery_info=?, delivered_at=?,
+       updated_at=CURRENT_TIMESTAMP WHERE id=?`
     ).bind(desc, cond, img, qty, price, newStatus, assignedTo, work_done, return_reason, delivery_info, delivered_at, machineId).run()
 
     const updated = await db.prepare('SELECT * FROM machines WHERE id = ?').bind(machineId).first()
-    return c.json(updated)
+    return c.json({ success: true, machine: updated })
   } catch (err: any) {
     return c.json({ error: 'Failed to update machine', detail: err?.message || 'unknown' }, 500)
   }
@@ -279,7 +363,8 @@ jobs.delete('/:jobId/machines/:machineId', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ error: 'Admin only' }, 403)
   if (c.get('user') !== OWNER_EMAIL) return c.json({ error: 'Owner required' }, 403)
   try {
-    const db = c.env.DB; const machineId = c.req.param('machineId')
+    const db = c.env.DB
+    const machineId = c.req.param('machineId')
     const existing = await db.prepare('SELECT id FROM machines WHERE id = ?').bind(machineId).first()
     if (!existing) return c.json({ error: 'Machine not found' }, 404)
     await db.prepare('DELETE FROM machines WHERE id = ?').bind(machineId).run()
@@ -293,25 +378,32 @@ jobs.delete('/:jobId/machines/:machineId', async (c) => {
 jobs.post('/:jobId/deliver', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ error: 'Admin only' }, 403)
   try {
-    const db = c.env.DB; const jobId = c.req.param('jobId')
+    const db = c.env.DB
+    const jobId = c.req.param('jobId')
     let body: any
     try { body = await c.req.json() } catch { body = {} }
+
     const machines = await db.prepare('SELECT * FROM machines WHERE job_id = ?').bind(jobId).all()
     if (!machines.results.length) return c.json({ error: 'No machines on this job' }, 400)
+
     const eligible = (machines.results as any[]).every(
-      (m: any) => ['Repaired','Return','Delivered'].includes(m.status)
+      (m: any) => ['Repaired', 'Return', 'Delivered'].includes(m.status)
     )
     if (!eligible) return c.json({ error: 'All machines must be Repaired or Return before delivery' }, 400)
-    const diStr      = body.delivery_info ? JSON.stringify(body.delivery_info) : null
+
+    const diStr       = body.delivery_info ? JSON.stringify(body.delivery_info) : null
     const deliveredAt = new Date().toISOString()
+
     await db.prepare(
-      `UPDATE machines SET status='Delivered',delivery_info=?,delivered_at=?,updated_at=CURRENT_TIMESTAMP
+      `UPDATE machines SET status='Delivered', delivery_info=?, delivered_at=?, updated_at=CURRENT_TIMESTAMP
        WHERE job_id=? AND status IN ('Repaired','Return')`
     ).bind(diStr, deliveredAt, jobId).run()
+
     await db.prepare('UPDATE jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_id=?').bind(jobId).run()
+
     const updated = await db.prepare('SELECT * FROM machines WHERE job_id = ? ORDER BY created_at ASC').bind(jobId).all()
     const job     = await db.prepare('SELECT * FROM jobs WHERE job_id = ?').bind(jobId).first()
-    return c.json(sanitizeJob(job, updated.results, 'admin'))
+    return c.json({ success: true, job: sanitizeJob(job, updated.results, 'admin') })
   } catch (err: any) {
     return c.json({ error: 'Delivery failed', detail: err?.message || 'unknown' }, 500)
   }

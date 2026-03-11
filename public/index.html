@@ -116,6 +116,10 @@
           <option value="Staff 3">Staff 3</option><option value="Staff 4">Staff 4</option>
         </select>
         <button onclick="loadJobs()" class="text-blue-500 hover:text-blue-700 text-sm flex items-center gap-1 px-2"><i class="fas fa-sync-alt text-xs"></i> Refresh</button>
+        <!-- Staff: Assigned to Me filter -->
+        <div id="my-filter-row" class="hidden flex items-center">
+          <button id="my-filter-btn" onclick="toggleMyFilter()" class="text-xs px-3 py-1.5 rounded-full font-semibold border border-blue-300 text-blue-600 hover:bg-blue-50">🔧 Assigned to Me</button>
+        </div>
       </div>
       <div id="delivered-filter-bar" class="hidden p-3 flex flex-wrap gap-3 items-center">
         <div class="flex-1 min-w-48 relative">
@@ -235,6 +239,11 @@
         <div class="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-2"><i class="fas fa-lock mr-1"></i>Internal only</div>
         <textarea id="machine-return-reason" placeholder="Reason for return..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
       </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Internal Notes</label>
+        <div class="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 mb-2"><i class="fas fa-sticky-note mr-1"></i>Internal only — not shown on job card</div>
+        <textarea id="machine-internal-notes" placeholder="Internal notes (optional)..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
+      </div>
       <div id="image-upload-row" class="hidden">
         <label class="block text-sm font-medium text-gray-700 mb-1">Machine Image</label>
         <div id="image-upload-area" class="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50" onclick="document.getElementById('machine-image-input').click()">
@@ -285,8 +294,8 @@
         <div><label class="block text-sm font-medium text-gray-700 mb-1">Relation</label><input id="delivery-relation" type="text" placeholder="e.g. Self, Son" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
       </div>
       <div id="delivery-courier-fields" class="hidden space-y-3">
-        <div><label class="block text-sm font-medium text-gray-700 mb-1">Shipping Service <span class="text-red-500">*</span></label><input id="delivery-service" type="text" placeholder="e.g. DTDC, BlueDart" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
-        <div><label class="block text-sm font-medium text-gray-700 mb-1">Tracking ID <span class="text-red-500">*</span></label><input id="delivery-tracking" type="text" placeholder="Tracking number" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Shipping Service</label><input id="delivery-service" type="text" placeholder="e.g. DTDC, BlueDart (optional)" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Tracking ID</label><input id="delivery-tracking" type="text" placeholder="Tracking number (optional)" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
         <div><label class="block text-sm font-medium text-gray-700 mb-1">Driver Name</label><input id="delivery-driver" type="text" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
         <div><label class="block text-sm font-medium text-gray-700 mb-1">Driver Contact</label><input id="delivery-driver-contact" type="tel" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
       </div>
