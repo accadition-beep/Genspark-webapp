@@ -1,13 +1,24 @@
 {
   "name": "ADITION ELECTRIC SOLUTION",
   "short_name": "AES",
-  "description": "Service Management System for ADITION ELECTRIC SOLUTION",
-  "start_url": "/?source=pwa",
+  "description": "Service Management System — adition™ since 1984",
+  "start_url": "/?source=pwa&status=under_repair",
   "display": "standalone",
-  "orientation": "portrait",
+  "display_override": ["standalone", "fullscreen"],
+  "orientation": "portrait-primary",
   "background_color": "#1a1a2e",
   "theme_color": "#1a1a2e",
   "categories": ["business", "utilities"],
+  "prefer_related_applications": false,
+  "scope": "/",
+  "lang": "en-IN",
+  "dir": "ltr",
+  "id": "/?source=pwa",
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
+  "edge_side_panel": { "preferred_width": 480 },
   "icons": [
     {
       "src": "/icons/icon-192.png",
@@ -20,6 +31,19 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "New Job",
+      "url": "/?view=newjob&source=pwa",
+      "description": "Create a new repair job"
+    },
+    {
+      "name": "Dashboard",
+      "url": "/?status=under_repair&source=pwa",
+      "description": "View active repair jobs"
     }
   ]
 }
