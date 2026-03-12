@@ -1,5 +1,13 @@
-// adition PWA — app.js v10.4
+// adition PWA — app.js v10.5.1
 // Admin: acc.adition@gmail.com / 0010  |  Staff: staff1-4 / same as username
+// Changes v10.5.1 (latest):
+//   - Backend: POST /api/jobs now returns flat { success:true, job_id, ...fields }
+//   - Backend: POST /api/jobs/:id/machines returns { success:true, machine:{...}, ...fields }
+//   - Backend: PUT /api/jobs/:id/machines/:mid returns { success:true, machine:{...}, ...fields }
+//   - Backend: All endpoints wrapped in try/catch, proper JSON on error (never empty response)
+//   - Backend: initDB() runs on every /api/* request — schema always up to date
+//   - Backend: DB repair endpoint POST /api/debug/repair migrates production schema
+//   - Production: deployed & verified working (Create Job, Add Machine, Update Machine, Deliver)
 // Changes v10.4:
 //   - Staff sees ALL active jobs (not just assigned), assigned machines highlighted
 //   - "Assigned to Me" filter for staff

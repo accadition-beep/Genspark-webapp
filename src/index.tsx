@@ -10,34 +10,137 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/api/*', cors({ origin: '*', allowMethods: ['GET','POST','PUT','DELETE','OPTIONS'], allowHeaders: ['Content-Type','Authorization','X-Offline-Ts'] }))
 
-// Auto-init DB
+// ── DB initialisation helper ─────────────────────────────────────────────────
+async function initDB(db: D1Database) {
+  // Step 1: Create tables with FULL schema (all columns included from the start)
+  // Run each statement individually so a single failure doesn't block the rest
+  const createStatements = [
+    `CREATE TABLE IF NOT EXISTS job_sequence (
+       id INTEGER PRIMARY KEY CHECK (id=1),
+       current_val INTEGER NOT NULL DEFAULT 0
+     )`,
+    `INSERT OR IGNORE INTO job_sequence (id, current_val) VALUES (1, 0)`,
+    `CREATE TABLE IF NOT EXISTS jobs (
+       id               INTEGER  PRIMARY KEY AUTOINCREMENT,
+       job_id           TEXT     UNIQUE NOT NULL,
+       customer_name    TEXT     NOT NULL,
+       customer_mobile  TEXT,
+       customer_address TEXT,
+       notes            TEXT,
+       amount_received  REAL     DEFAULT 0,
+       created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+     )`,
+    `CREATE TABLE IF NOT EXISTS machines (
+       id            INTEGER  PRIMARY KEY AUTOINCREMENT,
+       job_id        TEXT     NOT NULL,
+       description   TEXT     NOT NULL,
+       condition_text TEXT,
+       image_data    TEXT,
+       quantity      INTEGER  DEFAULT 1,
+       unit_price    REAL     DEFAULT 0,
+       status        TEXT     DEFAULT 'Under Repair',
+       assigned_to   TEXT,
+       work_done     TEXT,
+       return_reason TEXT,
+       delivery_info TEXT,
+       delivered_at  DATETIME,
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+     )`,
+    `CREATE TABLE IF NOT EXISTS customer_profiles (
+       id         INTEGER  PRIMARY KEY AUTOINCREMENT,
+       name       TEXT     NOT NULL,
+       mobile     TEXT     UNIQUE NOT NULL,
+       address    TEXT,
+       job_count  INTEGER  DEFAULT 1,
+       last_seen  DATETIME DEFAULT CURRENT_TIMESTAMP,
+       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_machines_job_id  ON machines(job_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_machines_assigned ON machines(assigned_to)`,
+    `CREATE INDEX IF NOT EXISTS idx_machines_status  ON machines(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_jobs_created_at  ON jobs(created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_cust_mobile      ON customer_profiles(mobile)`,
+  ]
+
+  for (const sql of createStatements) {
+    try { await db.prepare(sql).run() } catch { /* table/index already exists */ }
+  }
+
+  // Step 2: ALTER TABLE migrations — each runs independently
+  // If column already exists D1 throws SQLITE_ERROR which we swallow safely
+  // These are idempotent: errors for "duplicate column" are intentionally ignored
+  const alterStatements = [
+    // jobs table
+    `ALTER TABLE jobs     ADD COLUMN customer_address TEXT`,
+    `ALTER TABLE jobs     ADD COLUMN customer_mobile  TEXT`,
+    `ALTER TABLE jobs     ADD COLUMN notes            TEXT`,
+    `ALTER TABLE jobs     ADD COLUMN amount_received  REAL DEFAULT 0`,
+    `ALTER TABLE jobs     ADD COLUMN updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP`,
+    // machines table
+    `ALTER TABLE machines ADD COLUMN condition_text   TEXT`,
+    `ALTER TABLE machines ADD COLUMN image_data       TEXT`,
+    `ALTER TABLE machines ADD COLUMN quantity         INTEGER DEFAULT 1`,
+    `ALTER TABLE machines ADD COLUMN unit_price       REAL DEFAULT 0`,
+    `ALTER TABLE machines ADD COLUMN assigned_to      TEXT`,
+    `ALTER TABLE machines ADD COLUMN work_done        TEXT`,
+    `ALTER TABLE machines ADD COLUMN return_reason    TEXT`,
+    `ALTER TABLE machines ADD COLUMN delivery_info    TEXT`,
+    `ALTER TABLE machines ADD COLUMN delivered_at     DATETIME`,
+    `ALTER TABLE machines ADD COLUMN updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP`,
+  ]
+
+  for (const sql of alterStatements) {
+    try { await db.prepare(sql).run() } catch { /* column already exists — safe to ignore */ }
+  }
+}
+
+// Auto-init on every /api/* request (idempotent — safe to run repeatedly)
 app.use('/api/*', async (c, next) => {
   if (c.env?.DB) {
-    try {
-      await c.env.DB.batch([
-        c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS job_sequence (id INTEGER PRIMARY KEY CHECK (id=1), current_val INTEGER NOT NULL DEFAULT 0)`),
-        c.env.DB.prepare(`INSERT OR IGNORE INTO job_sequence (id, current_val) VALUES (1, 0)`),
-        c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT UNIQUE NOT NULL, customer_name TEXT NOT NULL, customer_mobile TEXT, customer_address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, amount_received REAL DEFAULT 0, notes TEXT)`),
-        c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS machines (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, description TEXT NOT NULL, condition_text TEXT, image_data TEXT, quantity INTEGER DEFAULT 1, unit_price REAL DEFAULT 0, status TEXT DEFAULT 'Under Repair', assigned_to TEXT, work_done TEXT, return_reason TEXT, delivery_info TEXT, delivered_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)`),
-        c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS customer_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, mobile TEXT UNIQUE NOT NULL, address TEXT, job_count INTEGER DEFAULT 1, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`),
-        c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_machines_job_id ON machines(job_id)`),
-        c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_machines_assigned ON machines(assigned_to)`),
-        c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_machines_status ON machines(status)`),
-        c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)`),
-        c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_cust_mobile ON customer_profiles(mobile)`),
-      ])
-      const migrations = [
-        `ALTER TABLE machines ADD COLUMN delivery_info TEXT`,
-        `ALTER TABLE machines ADD COLUMN delivered_at DATETIME`,
-        `ALTER TABLE jobs ADD COLUMN customer_address TEXT`,
-        `ALTER TABLE machines ADD COLUMN assigned_to TEXT`,
-        `ALTER TABLE machines ADD COLUMN work_done TEXT`,
-        `ALTER TABLE machines ADD COLUMN return_reason TEXT`,
-      ]
-      for (const sql of migrations) { try { await c.env.DB.prepare(sql).run() } catch {} }
-    } catch {}
+    try { await initDB(c.env.DB) } catch (e) { console.error('DB init error:', e) }
   }
   await next()
+})
+
+// ── Debug schema endpoint (admin, GET) ──────────────────────────────────────
+// Call GET /api/debug/schema to see current DB columns in production
+app.get('/api/debug/schema', async (c) => {
+  if (!c.env?.DB) return c.json({ error: 'No DB' }, 500)
+  try {
+    const [j, m] = await Promise.all([
+      c.env.DB.prepare(`PRAGMA table_info(jobs)`).all(),
+      c.env.DB.prepare(`PRAGMA table_info(machines)`).all(),
+    ])
+    return c.json({
+      jobs_columns:     (j.results as any[]).map(r => r.name),
+      machines_columns: (m.results as any[]).map(r => r.name),
+    })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// ── Force DB repair endpoint ─────────────────────────────────────────────────
+// POST /api/debug/repair — re-runs all migrations, returns schema after
+app.post('/api/debug/repair', async (c) => {
+  if (!c.env?.DB) return c.json({ error: 'No DB' }, 500)
+  try {
+    await initDB(c.env.DB)
+    const [j, m] = await Promise.all([
+      c.env.DB.prepare(`PRAGMA table_info(jobs)`).all(),
+      c.env.DB.prepare(`PRAGMA table_info(machines)`).all(),
+    ])
+    return c.json({
+      success:          true,
+      jobs_columns:     (j.results as any[]).map(r => r.name),
+      machines_columns: (m.results as any[]).map(r => r.name),
+    })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500)
+  }
 })
 
 app.route('/api/auth',      authRoutes)
@@ -45,8 +148,11 @@ app.route('/api/jobs',      jobRoutes)
 app.route('/api/admin',     adminRoutes)
 app.route('/api/customers', customerRoutes)
 
-app.get('/api/health', (c) => c.json({ status: 'ok', service: 'adition', version: '10.3' }))
+app.get('/api/health', (c) => c.json({ status: 'ok', service: 'adition', version: '10.5.1' }))
 app.get('/favicon.ico', (c) => new Response(null, { status: 204 }))
-app.get('/favicon.svg', (c) => new Response(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#1e40af"/><text x="50" y="68" font-size="60" text-anchor="middle" fill="white">&#9889;</text></svg>`, { headers: { 'Content-Type': 'image/svg+xml' } }))
+app.get('/favicon.svg', (c) => new Response(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#1e40af"/><text x="50" y="68" font-size="60" text-anchor="middle" fill="white">&#9889;</text></svg>`,
+  { headers: { 'Content-Type': 'image/svg+xml' } }
+))
 
 export default app
