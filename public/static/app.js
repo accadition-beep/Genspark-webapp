@@ -1,6 +1,24 @@
-// adition PWA — app.js v10.5.1
+// adition PWA — app.js v11.1.0
 // Admin: acc.adition@gmail.com / 0010  |  Staff: staff1-4 / same as username
-// Changes v10.5.1 (latest):
+// Changes v11.1.0:
+//   - Barcode generation (JsBarcode) with download / print / share
+//   - Barcode scanner via camera (ZXing) + manual fallback
+//   - Bulk job actions: export, archive, select all
+//   - Rapid job entry: mobile + name + address + inline machines, one-submit
+//   - AI Repair Suggestions from historical data
+//   - Audio notes per machine (record → base64 audio_note)
+//   - Machine timeline view
+//   - Trash page (soft-delete recovery)
+//   - Customer lookup modal with job history
+//   - System health modal
+//   - Customer analytics with overview + date range export
+//   - Monthly backup CSV download
+//   - Priority alert indicators (>24h pending, RED/GREEN/YELLOW/BLUE badges)
+//   - Alert color logic: all repaired→GREEN, courier received→YELLOW, ready dispatch→RED
+//   - Staff dashboard: all active jobs, assigned machines highlighted BLUE
+//   - Optimistic UI, lazy image loading
+//   - Alert sounds for urgent machines (optional)
+// Changes v10.5.1:
 //   - Backend: POST /api/jobs now returns flat { success:true, job_id, ...fields }
 //   - Backend: POST /api/jobs/:id/machines returns { success:true, machine:{...}, ...fields }
 //   - Backend: PUT /api/jobs/:id/machines/:mid returns { success:true, machine:{...}, ...fields }
@@ -1319,6 +1337,932 @@ function loadHtml2Canvas() {
     document.head.appendChild(s);
   });
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   INIT
+───────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   BULK ACTIONS
+───────────────────────────────────────────────────────────────────────────── */
+let bulkMode = false;
+let bulkSelected = new Set();
+
+function toggleBulkMode() {
+  bulkMode = !bulkMode;
+  bulkSelected.clear();
+  const bar = document.getElementById('bulk-actions-bar');
+  const btn = document.getElementById('bulk-toggle-btn');
+  if (bar) bar.classList.toggle('hidden', !bulkMode);
+  if (btn) btn.classList.toggle('bg-blue-100', bulkMode);
+  updateBulkCount();
+  filterJobs(); // re-render with checkboxes
+}
+
+function toggleBulkSelect(jobId) {
+  if (bulkSelected.has(jobId)) bulkSelected.delete(jobId);
+  else bulkSelected.add(jobId);
+  updateBulkCount();
+  // Update checkbox visually
+  const cb = document.getElementById(`bulk-cb-${jobId}`);
+  if (cb) cb.checked = bulkSelected.has(jobId);
+}
+
+function selectAllJobs() {
+  filteredJobs.forEach(j => bulkSelected.add(j.job_id));
+  updateBulkCount();
+  filterJobs();
+}
+
+function updateBulkCount() {
+  const el = document.getElementById('bulk-count');
+  if (el) el.textContent = bulkSelected.size;
+}
+
+async function bulkAction(action) {
+  if (!bulkSelected.size) { showToast('Select at least one job', 'warning'); return; }
+  const ids = Array.from(bulkSelected);
+  if (action === 'export') {
+    try {
+      const resp = await apiFetch('/api/jobs/bulk', { method:'POST', body: JSON.stringify({ action:'export', job_ids:ids }) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Export failed');
+      const { jobs, machines } = data;
+      const rows = [['job_id','customer_name','customer_mobile','customer_address','amount_received','notes','created_at','machine_id','description','status','unit_price','quantity','assigned_to'].join(',')];
+      for (const j of jobs||[]) {
+        const jm = (machines||[]).filter(m => m.job_id === j.job_id);
+        if (!jm.length) rows.push([j.job_id,j.customer_name,'','','','','','','','','','',''].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));
+        else for (const m of jm) rows.push([j.job_id,j.customer_name,j.customer_mobile||'',j.customer_address||'',j.amount_received||0,j.notes||'',j.created_at,m.id,m.description,m.status,m.unit_price||0,m.quantity||1,m.assigned_to||''].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));
+      }
+      const blob = new Blob([rows.join('\n')], { type:'text/csv' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `bulk-export-${Date.now()}.csv`; a.click();
+      showToast(`Exported ${ids.length} jobs`, 'success');
+    } catch (err) { showToast(err.message || 'Export failed', 'error'); }
+  } else if (action === 'archive') {
+    showConfirm('Archive Jobs', `Archive ${ids.length} selected jobs?`, async () => {
+      try {
+        const resp = await apiFetch('/api/jobs/bulk', { method:'POST', body: JSON.stringify({ action:'archive', job_ids:ids }) });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Archive failed');
+        showToast(`Archived ${data.affected || ids.length} jobs`, 'success');
+        toggleBulkMode(); await loadJobs();
+      } catch (err) { showToast(err.message || 'Archive failed', 'error'); }
+    });
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   RAPID JOB ENTRY
+───────────────────────────────────────────────────────────────────────────── */
+let rapidMachineCount = 0;
+
+function openRapidEntry() {
+  rapidMachineCount = 0;
+  ['re-mobile','re-name','re-address','re-notes'].forEach(id => { const el = document.getElementById(id); if (el) el.value=''; });
+  const ml = document.getElementById('rapid-machines-list'); if (ml) ml.innerHTML = '';
+  addRapidMachine();
+  openModal('rapid-entry-modal');
+  setTimeout(() => document.getElementById('re-mobile')?.focus(), 100);
+}
+
+async function rapidMobileLookup() {
+  const mobile = document.getElementById('re-mobile')?.value.trim();
+  if (!mobile || mobile.length < 5) return;
+  try {
+    const resp = await apiFetch(`/api/customers/search?q=${encodeURIComponent(mobile)}`);
+    const results = await resp.json();
+    if (Array.isArray(results) && results.length) {
+      const c = results[0];
+      const nameEl = document.getElementById('re-name'); if (nameEl && !nameEl.value) nameEl.value = c.name || '';
+      const addrEl = document.getElementById('re-address'); if (addrEl && !addrEl.value) addrEl.value = c.address || '';
+    }
+  } catch {}
+}
+
+function addRapidMachine() {
+  rapidMachineCount++;
+  const id = rapidMachineCount;
+  const ml = document.getElementById('rapid-machines-list'); if (!ml) return;
+  const div = document.createElement('div');
+  div.id = `rm-${id}`;
+  div.className = 'bg-gray-50 rounded-xl p-3 space-y-2 border border-gray-200';
+  div.innerHTML = `
+    <div class="flex items-center justify-between mb-1">
+      <span class="text-sm font-semibold text-gray-700">Machine ${id}</span>
+      ${id > 1 ? `<button onclick="removeRapidMachine(${id})" class="text-red-400 hover:text-red-600 text-xs"><i class="fas fa-times"></i></button>` : ''}
+    </div>
+    <input id="rm-desc-${id}" type="text" placeholder="Description (e.g., Ceiling Fan) *" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400"/>
+    <input id="rm-cond-${id}" type="text" placeholder="Condition / Problem" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400"/>
+    <div class="grid grid-cols-3 gap-2">
+      <div><input id="rm-qty-${id}" type="number" min="1" value="1" placeholder="Qty" class="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm outline-none focus:border-blue-400"/></div>
+      <div><input id="rm-price-${id}" type="number" min="0" value="0" placeholder="Price" class="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm outline-none focus:border-blue-400"/></div>
+      <div>
+        <select id="rm-staff-${id}" class="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm outline-none focus:border-blue-400">
+          <option value="">Staff</option>
+          <option value="Staff 1">S1</option><option value="Staff 2">S2</option>
+          <option value="Staff 3">S3</option><option value="Staff 4">S4</option>
+        </select>
+      </div>
+    </div>`;
+  ml.appendChild(div);
+}
+
+function removeRapidMachine(id) {
+  const el = document.getElementById(`rm-${id}`); if (el) el.remove();
+}
+
+async function submitRapidEntry() {
+  const mobile = document.getElementById('re-mobile')?.value.trim();
+  const name   = document.getElementById('re-name')?.value.trim();
+  const addr   = document.getElementById('re-address')?.value.trim();
+  const notes  = document.getElementById('re-notes')?.value.trim();
+  if (!name) { showToast('Customer name required', 'error'); return; }
+
+  // Collect machines
+  const machinesData = [];
+  for (let i = 1; i <= rapidMachineCount; i++) {
+    const el = document.getElementById(`rm-${i}`);
+    if (!el) continue;
+    const desc = document.getElementById(`rm-desc-${i}`)?.value.trim();
+    if (!desc) continue;
+    machinesData.push({
+      description:    desc,
+      condition_text: document.getElementById(`rm-cond-${i}`)?.value.trim() || null,
+      quantity:       parseInt(document.getElementById(`rm-qty-${i}`)?.value)||1,
+      unit_price:     parseFloat(document.getElementById(`rm-price-${i}`)?.value)||0,
+      assigned_to:    document.getElementById(`rm-staff-${i}`)?.value || null,
+      status:         'Under Repair'
+    });
+  }
+  if (!machinesData.length) { showToast('Add at least one machine', 'error'); return; }
+
+  const spinner = document.getElementById('re-spinner');
+  const btnText = document.getElementById('re-btn-text');
+  if (spinner) spinner.classList.remove('hidden');
+  if (btnText) btnText.textContent = 'Creating…';
+
+  try {
+    // Create job
+    const jResp = await apiFetch('/api/jobs', { method:'POST', body: JSON.stringify({ customer_name:name, customer_mobile:mobile||null, customer_address:addr||null, notes:notes||null }) });
+    const jData = await jResp.json();
+    if (!jResp.ok) throw new Error(jData.error || 'Job creation failed');
+    const jobId = jData.job_id;
+
+    // Upsert customer
+    if (mobile) { try { await apiFetch('/api/customers/upsert', { method:'POST', body: JSON.stringify({ name, mobile, address:addr||null }) }); } catch {} }
+
+    // Add machines
+    let addedCount = 0;
+    for (const m of machinesData) {
+      try {
+        await apiFetch(`/api/jobs/${jobId}/machines`, { method:'POST', body: JSON.stringify(m) });
+        addedCount++;
+      } catch(e) { console.warn('Machine add failed:', e.message); }
+    }
+
+    closeModal('rapid-entry-modal');
+    showToast(`Job ${jobId} created with ${addedCount} machine(s)!`, 'success');
+    await loadJobs();
+  } catch (err) {
+    if (err.message === 'offline_queued') { closeModal('rapid-entry-modal'); showToast('Queued for sync', 'warning'); }
+    else showToast(err.message || 'Failed', 'error');
+  } finally {
+    if (spinner) spinner.classList.add('hidden');
+    if (btnText) btnText.textContent = 'Create Job & Machines';
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   BARCODE GENERATION + SCANNER
+───────────────────────────────────────────────────────────────────────────── */
+function loadJsBarcode() {
+  return new Promise(resolve => {
+    if (typeof JsBarcode !== 'undefined') { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js';
+    s.onload = resolve; s.onerror = resolve;
+    document.head.appendChild(s);
+  });
+}
+
+async function showBarcode(jobId) {
+  await loadJsBarcode();
+  const container = document.getElementById('barcode-container');
+  const label     = document.getElementById('barcode-job-id-text');
+  if (!container) return;
+  container.innerHTML = '<canvas id="barcode-canvas"></canvas>';
+  if (label) label.textContent = jobId;
+  try {
+    JsBarcode('#barcode-canvas', jobId, {
+      format:      'CODE128',
+      lineColor:   '#000000',
+      width:       2.5,
+      height:      80,
+      displayValue: true,
+      fontSize:    16,
+      margin:      10,
+      background:  '#ffffff'
+    });
+  } catch (e) {
+    container.innerHTML = `<p class="text-sm text-red-500">Barcode error: ${e.message}</p>`;
+  }
+  openModal('barcode-modal');
+}
+
+function downloadBarcode() {
+  const canvas = document.getElementById('barcode-canvas');
+  if (!canvas) return;
+  const jobId = document.getElementById('barcode-job-id-text')?.textContent || 'barcode';
+  canvas.toBlob(blob => { if (blob) downloadBlob(blob, `Barcode-${jobId}.png`); });
+}
+
+function printBarcode() {
+  const canvas = document.getElementById('barcode-canvas');
+  const jobId  = document.getElementById('barcode-job-id-text')?.textContent || '';
+  if (!canvas) return;
+  const dataUrl = canvas.toDataURL('image/png');
+  const win = window.open('', '_blank', 'width=400,height=300');
+  if (!win) { showToast('Pop-up blocked — use Download instead', 'warning'); return; }
+  win.document.write(`<html><head><title>Barcode ${jobId}</title>
+    <style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;margin:0;padding:20px;font-family:Arial;}
+    img{max-width:300px;}h2{font-size:18px;margin-top:10px;}</style></head>
+    <body><img src="${dataUrl}"/><h2>${jobId}</h2><script>window.onload=()=>window.print()<\/script></body></html>`);
+  win.document.close();
+}
+
+// Mobile share for barcode
+async function shareBarcodeSheet(jobId) {
+  await loadJsBarcode();
+  const canvas = document.createElement('canvas');
+  try {
+    JsBarcode(canvas, jobId, { format:'CODE128', lineColor:'#000000', width:3, height:100, displayValue:true, fontSize:18, margin:14 });
+    canvas.toBlob(async blob => {
+      if (!blob) return;
+      const file = new File([blob], `Barcode-${jobId}.png`, { type:'image/png' });
+      if (navigator.share && navigator.canShare && navigator.canShare({ files:[file] })) {
+        try { await navigator.share({ title:`Job ${jobId} Barcode`, files:[file] }); return; } catch {}
+      }
+      downloadBlob(blob, `Barcode-${jobId}.png`);
+    });
+  } catch { showBarcode(jobId); }
+}
+
+/* Barcode scanner — uses camera + ZXing */
+let scannerStream = null;
+let scannerInterval = null;
+
+async function openBarcodeScanner() {
+  openModal('scanner-modal');
+  const video = document.getElementById('scanner-video');
+  const status = document.getElementById('scanner-status');
+  try {
+    scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' } });
+    if (video) { video.srcObject = scannerStream; await video.play(); }
+    if (status) status.textContent = 'Camera active — scanning…';
+    // Load ZXing
+    await loadZXing();
+    startZXingScan(video);
+  } catch (err) {
+    if (status) status.textContent = 'Camera unavailable — use manual entry below';
+  }
+}
+
+function loadZXing() {
+  return new Promise(resolve => {
+    if (typeof ZXing !== 'undefined') { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+    s.onload = resolve; s.onerror = resolve;
+    document.head.appendChild(s);
+  });
+}
+
+function startZXingScan(video) {
+  try {
+    if (typeof ZXing === 'undefined') return;
+    const hints = new Map();
+    const formats = [ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.QR_CODE, ZXing.BarcodeFormat.DATA_MATRIX];
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+    const reader = new ZXing.MultiFormatReader();
+    reader.setHints(hints);
+    const status = document.getElementById('scanner-status');
+    scannerInterval = setInterval(async () => {
+      if (!video || video.readyState < 2) return;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const lum = ZXing.HTMLCanvasElementLuminanceSource ? new ZXing.HTMLCanvasElementLuminanceSource(canvas) : null;
+        if (!lum) return;
+        const bmp    = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum));
+        const result = reader.decode(bmp);
+        if (result?.text) {
+          if (status) status.textContent = `Found: ${result.text}`;
+          stopScanner();
+          jumpToJob(result.text.trim());
+        }
+      } catch {}
+    }, 300);
+  } catch (e) { console.warn('ZXing error:', e); }
+}
+
+function stopScanner() {
+  if (scannerStream) { scannerStream.getTracks().forEach(t => t.stop()); scannerStream = null; }
+  if (scannerInterval) { clearInterval(scannerInterval); scannerInterval = null; }
+  closeModal('scanner-modal');
+}
+
+async function jumpToJob(jobId) {
+  if (!jobId) return;
+  const normalized = jobId.toUpperCase().trim();
+  const job = allJobs.find(j => j.job_id === normalized) || deliveredJobs.find(j => j.job_id === normalized);
+  if (job) {
+    // Scroll to card
+    const el = document.getElementById(`job-card-${normalized}`);
+    if (el) { el.scrollIntoView({ behavior:'smooth', block:'center' }); el.style.outline = '3px solid #3b82f6'; setTimeout(() => el.style.outline='', 2000); }
+    else { switchTab(job.all_delivered ? 'delivered' : 'active'); setTimeout(() => { const el2 = document.getElementById(`job-card-${normalized}`); if (el2) el2.scrollIntoView({ behavior:'smooth' }); }, 200); }
+    showToast(`Found job ${normalized}`, 'success');
+  } else {
+    // Try API
+    try {
+      const resp = await apiFetch(`/api/jobs/${normalized}`);
+      if (resp.ok) { await loadJobs(); setTimeout(() => jumpToJob(normalized), 500); }
+      else showToast('Job not found: ' + normalized, 'error');
+    } catch { showToast('Job not found: ' + normalized, 'error'); }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   AI REPAIR SUGGESTIONS
+───────────────────────────────────────────────────────────────────────────── */
+async function getAISuggestions() {
+  const desc = document.getElementById('machine-desc')?.value.trim();
+  const cond = document.getElementById('machine-condition')?.value.trim();
+  const box  = document.getElementById('ai-suggestions-box');
+  if (!box) return;
+  if (!desc) { showToast('Enter machine description first', 'warning'); return; }
+  box.innerHTML = '<div class="text-xs text-purple-500 text-center py-2"><span class="spinner w-4 h-4 inline-block"></span> Loading AI suggestions…</div>';
+  box.classList.remove('hidden');
+  try {
+    const resp = await apiFetch(`/api/jobs/ai-suggest?desc=${encodeURIComponent(desc)}&cond=${encodeURIComponent(cond||'')}`);
+    const data = await resp.json();
+    if (!resp.ok || !data.success) throw new Error(data.error || 'AI failed');
+    if (!data.suggestions?.length) { box.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">No historical data for this machine yet</p>'; return; }
+    box.innerHTML = `<p class="text-xs font-semibold text-purple-700 mb-2">🤖 Based on ${data.total_similar} similar repairs${data.avg_repair_hours ? ` · avg ${data.avg_repair_hours}h` : ''}:</p>` +
+      data.suggestions.map(s => `<div class="bg-white rounded-lg px-3 py-2 cursor-pointer hover:bg-purple-100 border border-purple-100 text-xs text-gray-700 flex items-center justify-between" onclick="applyAISuggestion('${s.repair.replace(/'/g,"&#39;").replace(/\n/g,' ')}')">
+        <span>${s.repair}</span>
+        <span class="text-purple-500 font-semibold ml-2">${s.pct}%</span>
+      </div>`).join('');
+  } catch (err) {
+    box.innerHTML = `<p class="text-xs text-red-400 text-center py-2">${err.message}</p>`;
+  }
+}
+
+function applyAISuggestion(text) {
+  const el = document.getElementById('machine-work-done'); if (el) el.value = text;
+  const box = document.getElementById('ai-suggestions-box'); if (box) box.classList.add('hidden');
+  showToast('Suggestion applied', 'info');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   AUDIO NOTES
+───────────────────────────────────────────────────────────────────────────── */
+let mediaRecorder = null, audioChunks = [], audioTimerInterval = null, audioSeconds = 0;
+let currentAudioBase64 = null;
+
+async function toggleAudioRecord() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+  } else {
+    await startAudioRecord();
+  }
+}
+
+async function startAudioRecord() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = []; audioSeconds = 0;
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      stream.getTracks().forEach(t => t.stop());
+      // Convert to base64
+      const reader = new FileReader();
+      reader.onload = () => {
+        currentAudioBase64 = reader.result;
+        const ind = document.getElementById('audio-saved-indicator');
+        if (ind) ind.classList.remove('hidden');
+      };
+      reader.readAsDataURL(blob);
+      clearInterval(audioTimerInterval);
+      const timer = document.getElementById('audio-timer'); if (timer) timer.classList.add('hidden');
+      const btn = document.getElementById('audio-record-btn');
+      const icon = document.getElementById('audio-icon');
+      const txt  = document.getElementById('audio-btn-text');
+      if (btn)  btn.classList.remove('bg-red-600','text-white');
+      if (btn)  btn.classList.add('bg-red-50','text-red-600');
+      if (icon) { icon.classList.remove('fa-stop'); icon.classList.add('fa-microphone'); }
+      if (txt)  txt.textContent = 'Re-record';
+    };
+    mediaRecorder.start();
+    // Update UI
+    const btn = document.getElementById('audio-record-btn');
+    const icon = document.getElementById('audio-icon');
+    const txt  = document.getElementById('audio-btn-text');
+    const timer = document.getElementById('audio-timer');
+    if (btn)  { btn.classList.remove('bg-red-50','text-red-600'); btn.classList.add('bg-red-600','text-white'); }
+    if (icon) { icon.classList.remove('fa-microphone'); icon.classList.add('fa-stop'); }
+    if (txt)  txt.textContent = 'Stop';
+    if (timer) timer.classList.remove('hidden');
+    audioTimerInterval = setInterval(() => { audioSeconds++; const m=Math.floor(audioSeconds/60); const s=audioSeconds%60; if (timer) timer.textContent=`${m}:${String(s).padStart(2,'0')}`; }, 1000);
+  } catch (err) {
+    showToast('Microphone unavailable: ' + err.message, 'error');
+  }
+}
+
+function resetAudioRecorder() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  currentAudioBase64 = null;
+  audioChunks = []; audioSeconds = 0;
+  clearInterval(audioTimerInterval);
+  const timer = document.getElementById('audio-timer'); if (timer) { timer.textContent = '0:00'; timer.classList.add('hidden'); }
+  const ind = document.getElementById('audio-saved-indicator'); if (ind) ind.classList.add('hidden');
+  const btn = document.getElementById('audio-record-btn');
+  const icon = document.getElementById('audio-icon');
+  const txt  = document.getElementById('audio-btn-text');
+  if (btn)  { btn.classList.remove('bg-red-600','text-white'); btn.classList.add('bg-red-50','text-red-600'); }
+  if (icon) { icon.classList.remove('fa-stop'); icon.classList.add('fa-microphone'); }
+  if (txt)  txt.textContent = 'Record';
+}
+
+/* Patch saveMachine to include audio_note */
+const _origSaveMachine = saveMachine;
+// We'll override below after definition
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MACHINE TIMELINE
+───────────────────────────────────────────────────────────────────────────── */
+async function openTimeline(jobId) {
+  openModal('timeline-modal');
+  const el = document.getElementById('timeline-content');
+  if (!el) return;
+  el.innerHTML = '<div class="text-center py-6"><div class="spinner w-8 h-8 mx-auto mb-2"></div><p class="text-sm text-gray-400">Loading timeline…</p></div>';
+  try {
+    const resp = await apiFetch(`/api/jobs/${jobId}/timeline`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed');
+    const events = data.timeline || [];
+    if (!events.length) { el.innerHTML = '<p class="text-center text-gray-400 text-sm py-6">No timeline events yet</p>'; return; }
+    const iconMap = { received:'fa-box-open text-blue-500', assigned:'fa-user-tag text-green-500', repair_completed:'fa-check-circle text-green-600', marked_return:'fa-undo text-yellow-500', delivered:'fa-truck text-indigo-500', photo_uploaded:'fa-image text-purple-500', status_changed:'fa-exchange-alt text-gray-400' };
+    el.innerHTML = `<div class="relative">
+      <div class="absolute left-5 top-0 bottom-0 w-0.5 bg-gray-100"></div>
+      <div class="space-y-4">
+        ${events.map(e => {
+          const ic = iconMap[e.event_type] || 'fa-circle text-gray-300';
+          return `<div class="relative flex gap-4">
+            <div class="w-10 h-10 rounded-full bg-white border-2 border-gray-100 flex items-center justify-center z-10 flex-shrink-0">
+              <i class="fas ${ic} text-sm"></i>
+            </div>
+            <div class="flex-1 pb-4">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <p class="font-semibold text-gray-800 text-sm">${e.event_type.replace(/_/g,' ')}</p>
+                  ${e.event_note ? `<p class="text-xs text-gray-500 mt-0.5">${e.event_note}</p>` : ''}
+                  ${e.description ? `<p class="text-xs text-blue-500 mt-0.5">Machine: ${e.description}</p>` : ''}
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-gray-400">${fmtDate(e.created_at)}</p>
+                  ${e.actor ? `<p class="text-xs text-gray-400">${e.actor}</p>` : ''}
+                </div>
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  } catch (err) { el.innerHTML = `<p class="text-center text-red-400 text-sm py-6">${err.message}</p>`; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   TRASH / SOFT DELETE RECOVERY
+───────────────────────────────────────────────────────────────────────────── */
+async function openTrash() {
+  openModal('trash-modal');
+  const el = document.getElementById('trash-content');
+  if (!el) return;
+  el.innerHTML = '<div class="text-center py-6"><div class="spinner w-8 h-8 mx-auto mb-2"></div><p class="text-sm text-gray-400">Loading…</p></div>';
+  try {
+    const resp = await apiFetch('/api/jobs/trash/list');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed');
+    const items = data.items || [];
+    if (!items.length) { el.innerHTML = '<p class="text-center text-gray-400 text-sm py-6">Trash is empty</p>'; return; }
+    el.innerHTML = items.map(item => {
+      const purge  = item.purge_at ? new Date(item.purge_at).toLocaleDateString('en-IN') : 'N/A';
+      const del    = item.deleted_at ? new Date(item.deleted_at).toLocaleDateString('en-IN') : '';
+      const parsed = (() => { try { return JSON.parse(item.item_data); } catch { return {}; } })();
+      const label  = item.item_type === 'job'
+        ? `Job ${item.item_id} — ${parsed.job?.customer_name || parsed.customer_name || ''}`
+        : `Machine #${item.item_id} — ${parsed.description || ''}`;
+      return `<div class="bg-white rounded-xl border border-orange-100 p-4 flex items-center justify-between gap-3">
+        <div class="flex-1 min-w-0">
+          <p class="font-semibold text-sm text-gray-800">${label}</p>
+          <p class="text-xs text-gray-400">Deleted: ${del} · Purge: ${purge}</p>
+        </div>
+        <button onclick="restoreTrashItem(${item.id})" class="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 font-semibold flex-shrink-0"><i class="fas fa-undo mr-1"></i>Restore</button>
+      </div>`;
+    }).join('');
+  } catch (err) { el.innerHTML = `<p class="text-center text-red-400 text-sm py-6">${err.message}</p>`; }
+}
+
+async function restoreTrashItem(trashId) {
+  try {
+    const resp = await apiFetch('/api/jobs/trash/restore', { method:'POST', body: JSON.stringify({ trash_id: trashId }) });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Restore failed');
+    showToast(data.message || 'Restored', 'success');
+    await openTrash(); // refresh trash list
+    await loadJobs();
+  } catch (err) { showToast(err.message || 'Restore failed', 'error'); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   CUSTOMER LOOKUP
+───────────────────────────────────────────────────────────────────────────── */
+async function customerLookup() {
+  const q  = document.getElementById('lookup-mobile')?.value.trim() || '';
+  const el = document.getElementById('lookup-result');
+  if (!el) return;
+  if (q.length < 3) { el.innerHTML = '<p class="text-sm text-gray-400 text-center py-2">Type at least 3 chars</p>'; return; }
+  el.innerHTML = '<div class="text-center py-4"><div class="spinner w-6 h-6 mx-auto"></div></div>';
+  try {
+    const resp = await apiFetch(`/api/customers/search?q=${encodeURIComponent(q)}`);
+    const results = await resp.json();
+    if (!Array.isArray(results) || !results.length) { el.innerHTML = '<p class="text-sm text-gray-400 text-center py-2">No customers found</p>'; return; }
+    el.innerHTML = results.map(c => `<div class="bg-gray-50 rounded-xl p-4 border border-gray-100 space-y-2">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <p class="font-bold text-gray-800">${c.name}</p>
+          <p class="text-sm text-gray-500">${c.mobile}${c.address ? ` · ${c.address}` : ''}</p>
+          <p class="text-xs text-gray-400">Jobs: ${c.job_count || 0} · Last: ${fmtDate(c.last_seen)}</p>
+        </div>
+        <span class="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded-lg font-semibold">${c.job_count || 0} jobs</span>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button onclick="closeModal('customer-lookup-modal');openNewJobModal();fillJobMobile('${c.mobile}','${c.name.replace(/'/g,"&#39;")}','${(c.address||'').replace(/'/g,"&#39;")}')" class="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 font-semibold"><i class="fas fa-plus mr-1"></i>New Job</button>
+        <button onclick="lookupJobHistory('${c.mobile}')" class="text-xs border border-gray-200 text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-50 font-semibold"><i class="fas fa-history mr-1"></i>History</button>
+        <button onclick="shareWhatsAppContact('${c.mobile}','${c.name.replace(/'/g,"&#39;")}')" class="text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 font-semibold"><i class="fab fa-whatsapp mr-1"></i>WhatsApp</button>
+      </div>
+      <div id="history-${c.mobile}" class="hidden mt-2"></div>
+    </div>`).join('');
+  } catch (err) { el.innerHTML = `<p class="text-sm text-red-400 text-center py-2">${err.message}</p>`; }
+}
+
+function fillJobMobile(mobile, name, address) {
+  setTimeout(() => {
+    const mel = document.getElementById('new-customer-mobile'); if (mel) mel.value = mobile;
+    const nel = document.getElementById('new-customer-name');   if (nel) nel.value = name;
+    const ael = document.getElementById('new-customer-address'); if (ael) ael.value = address;
+  }, 200);
+}
+
+async function lookupJobHistory(mobile) {
+  const el = document.getElementById(`history-${mobile}`);
+  if (!el) return;
+  if (!el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">Loading…</p>';
+  try {
+    const resp = await apiFetch(`/api/jobs/search?q=${encodeURIComponent(mobile)}`);
+    const results = await resp.json();
+    if (!Array.isArray(results) || !results.length) { el.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">No jobs found</p>'; return; }
+    el.innerHTML = `<div class="space-y-1">${results.map(j => `<div class="flex items-center gap-2 text-xs text-gray-600 bg-white rounded-lg px-3 py-2 border border-gray-100">
+      <span class="font-bold text-blue-600">${j.job_id}</span>
+      <span class="flex-1">${j.customer_name}</span>
+      <span class="text-gray-400">${fmtDate(j.created_at)}</span>
+    </div>`).join('')}</div>`;
+  } catch (err) { el.innerHTML = `<p class="text-xs text-red-400 text-center py-2">${err.message}</p>`; }
+}
+
+function shareWhatsAppContact(mobile, name) {
+  const text = `Hi ${name}, regarding your service with ADITION ELECTRIC SOLUTION.`;
+  const wa   = `https://wa.me/91${mobile}?text=${encodeURIComponent(text)}`;
+  window.open(wa, '_blank');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   SYSTEM HEALTH
+───────────────────────────────────────────────────────────────────────────── */
+async function openSystemHealth() {
+  openModal('health-modal');
+  const el = document.getElementById('health-content');
+  if (!el) return;
+  el.innerHTML = '<div class="text-center py-6"><div class="spinner w-8 h-8 mx-auto mb-2"></div><p class="text-sm text-gray-400">Loading health data…</p></div>';
+  try {
+    const resp = await apiFetch('/api/jobs/system-health');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed');
+    el.innerHTML = `<div class="space-y-4">
+      <div class="grid grid-cols-2 gap-3">
+        ${[
+          { label:'Total Jobs',     value:data.total_jobs,    color:'blue', icon:'fa-clipboard-list' },
+          { label:'Total Machines', value:data.total_machines, color:'green', icon:'fa-cog' },
+          { label:'Delivered Jobs', value:data.delivered_jobs, color:'indigo', icon:'fa-truck' },
+          { label:'In Trash',       value:data.soft_deleted,   color:'orange', icon:'fa-trash' },
+        ].map(s => `<div class="bg-${s.color}-50 rounded-xl p-4 text-center">
+          <i class="fas ${s.icon} text-${s.color}-400 text-lg mb-2 block"></i>
+          <p class="text-2xl font-black text-${s.color}-700">${s.value || 0}</p>
+          <p class="text-xs text-gray-500 mt-1">${s.label}</p>
+        </div>`).join('')}
+      </div>
+      <div class="bg-gray-50 rounded-xl p-4 space-y-3">
+        <div class="flex justify-between items-center">
+          <span class="text-sm text-gray-600">Est. DB Size</span>
+          <span class="font-semibold text-gray-800">${data.est_db_size_mb || '0.00'} MB</span>
+        </div>
+        <div class="flex justify-between items-center">
+          <span class="text-sm text-gray-600">Last Backup</span>
+          <span class="font-semibold text-gray-800">${data.last_backup ? `${data.last_backup.backup_key} (${fmtDate(data.last_backup.created_at)})` : 'Never'}</span>
+        </div>
+      </div>
+      <div class="flex gap-3">
+        <button onclick="runMonthlyBackup()" class="flex-1 bg-teal-600 text-white rounded-lg py-2 text-sm font-semibold hover:bg-teal-700"><i class="fas fa-cloud-download-alt mr-1"></i> Backup Now</button>
+        <button onclick="closeModal('health-modal');openAdminTools()" class="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2 text-sm font-medium">Admin Tools</button>
+      </div>
+    </div>`;
+  } catch (err) { el.innerHTML = `<p class="text-center text-red-400 text-sm py-6">${err.message}</p>`; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   ANALYTICS
+───────────────────────────────────────────────────────────────────────────── */
+let analyticsData = [];
+
+async function openAnalytics() {
+  openModal('analytics-modal');
+  await loadAnalytics();
+}
+
+async function loadAnalytics() {
+  const from = document.getElementById('analytics-from')?.value || '';
+  const to   = document.getElementById('analytics-to')?.value   || '';
+  let url = '/api/analytics/customers';
+  if (from && to) url += `?from=${from}&to=${to}`;
+
+  const tbody = document.getElementById('analytics-table-body');
+  const ov    = document.getElementById('analytics-overview');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8"><div class="spinner w-6 h-6 mx-auto"></div></td></tr>';
+
+  try {
+    const [custResp, ovResp] = await Promise.all([
+      apiFetch(url),
+      apiFetch('/api/analytics/overview' + (from && to ? `?from=${from}&to=${to}` : ''))
+    ]);
+    const custData = await custResp.json();
+    const ovData   = await ovResp.json();
+
+    analyticsData = custData.customers || [];
+    const overview = ovData.overview || {};
+
+    if (ov) {
+      ov.innerHTML = [
+        { label:'Total Jobs',     value:overview.total_jobs     || 0, color:'blue' },
+        { label:'Total Machines', value:overview.total_machines || 0, color:'green' },
+        { label:'Revenue',        value:fmtCurrency(overview.total_revenue||0), color:'indigo' },
+        { label:'Delivered',      value:overview.delivered      || 0, color:'gray' },
+        { label:'Under Repair',   value:overview.under_repair   || 0, color:'red' },
+        { label:'Repaired',       value:overview.repaired       || 0, color:'emerald' },
+      ].map(s => `<div class="bg-${s.color}-50 rounded-xl p-3 text-center">
+        <p class="text-xs text-gray-500 mb-1">${s.label}</p>
+        <p class="text-lg font-bold text-${s.color}-700">${s.value}</p>
+      </div>`).join('');
+    }
+
+    if (!analyticsData.length) {
+      if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-gray-400 text-sm">No customer data</td></tr>';
+      return;
+    }
+    if (tbody) tbody.innerHTML = analyticsData.map(c => `<tr class="hover:bg-gray-50 border-b border-gray-50">
+      <td class="px-3 py-2 font-semibold text-gray-800">${c.customer_name}</td>
+      <td class="px-3 py-2 text-gray-500">${c.customer_mobile || '—'}</td>
+      <td class="px-3 py-2 text-center font-bold text-blue-600">${c.total_jobs}</td>
+      <td class="px-3 py-2 text-center text-gray-600">${c.total_machines}</td>
+      <td class="px-3 py-2 text-right font-semibold text-green-700">${fmtCurrency(c.total_revenue||0)}</td>
+    </tr>`).join('');
+  } catch (err) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="text-center py-8 text-red-400 text-sm">${err.message}</td></tr>`;
+  }
+}
+
+function exportAnalyticsCsv() {
+  if (!analyticsData.length) { showToast('Load data first', 'warning'); return; }
+  const rows = [['Customer','Mobile','Total Jobs','Total Machines','Revenue','Last Job'].join(',')];
+  analyticsData.forEach(c => rows.push([c.customer_name,c.customer_mobile||'',c.total_jobs,c.total_machines,c.total_revenue||0,c.last_job_at||''].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(',')));
+  const blob = new Blob([rows.join('\n')], { type:'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `customer-analytics-${Date.now()}.csv`; a.click();
+  showToast('Analytics exported', 'success');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MONTHLY BACKUP
+───────────────────────────────────────────────────────────────────────────── */
+async function runMonthlyBackup() {
+  showToast('Creating backup…', 'info');
+  try {
+    const resp = await apiFetch('/api/admin/backup', { method:'POST', body:'{}' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || data.detail || 'Backup failed');
+
+    const { jobs=[], machines=[], customers=[], backup_key } = data;
+    // Build CSV
+    const rows = [['type','job_id','customer_name','customer_mobile','customer_address','amount_received','notes','created_at','machine_id','description','condition_text','quantity','unit_price','status','assigned_to','work_done','return_reason','delivered_at'].join(',')];
+    for (const j of jobs) {
+      const jm = machines.filter(m => m.job_id === j.job_id);
+      if (!jm.length) {
+        rows.push(['job',j.job_id,j.customer_name,j.customer_mobile||'',j.customer_address||'',j.amount_received||0,j.notes||'',j.created_at,'','','','','','','','','',''].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));
+      } else {
+        for (const m of jm) rows.push(['job',j.job_id,j.customer_name,j.customer_mobile||'',j.customer_address||'',j.amount_received||0,j.notes||'',j.created_at,m.id,m.description,m.condition_text||'',m.quantity||1,m.unit_price||0,m.status,m.assigned_to||'',m.work_done||'',m.return_reason||'',m.delivered_at||''].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));
+      }
+    }
+    for (const c of customers) rows.push(['customer','',c.name,c.mobile,c.address||'','','',c.created_at,'','','','','','','','','',''].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));
+    const blob = new Blob([rows.join('\n')], { type:'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${backup_key || 'backup'}.csv`; a.click();
+    showToast(`Backup ${backup_key} created (${data.record_count} records)`, 'success', 5000);
+  } catch (err) { showToast(err.message || 'Backup failed', 'error'); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   PRIORITY ALERT COLORS
+   - All repaired (ready to deliver) → GREEN card glow
+   - Has courier machine with delivery_info.type==='courier' → YELLOW glow  
+   - Pending >24h (any Under Repair) → RED glow
+   - Staff: assigned machine → BLUE highlight (already done per machine row)
+───────────────────────────────────────────────────────────────────────────── */
+function getJobAlertClass(job) {
+  const machines = job.machines || [];
+  const now = Date.now();
+
+  // All repaired / ready to deliver
+  if (job.all_repaired && !job.all_delivered) return 'job-alert-green';
+
+  // Check if any machine has been under repair > 24h
+  const urgent = machines.some(m => m.status === 'Under Repair' && m.created_at && (now - new Date(m.created_at).getTime()) > 24*3600*1000);
+  if (urgent) return 'job-alert-red';
+
+  return '';
+}
+
+// Override buildJobCard to use alert classes and bulk checkboxes
+const _origBuildJobCard = buildJobCard;
+// (defined inline below to replace the original)
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   OVERRIDE buildJobCard with alert + bulk selection
+───────────────────────────────────────────────────────────────────────────── */
+function buildJobCard(job) {
+  const isAdmin      = userRole === 'admin';
+  const allDelivered = job.all_delivered;
+  const machines     = job.machines || [];
+  const alertClass   = getJobAlertClass(job);
+
+  const machinesHtml = machines.length
+    ? machines.map(m => buildMachineRow(m, job.job_id)).join('')
+    : `<p class="text-gray-400 text-xs text-center py-4">No machines yet</p>`;
+
+  const totalsHtml = isAdmin ? `<span class="text-xs font-semibold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
+    Total: ${fmtCurrency(job.grand_total||0)} · Paid: ${fmtCurrency(job.amount_received||0)} · Bal: ${fmtCurrency(job.balance||0)}
+  </span>` : '';
+
+  const mobileHtml = isAdmin && job.customer_mobile ? `<span class="text-xs text-gray-400">${job.customer_mobile}</span>` : '';
+  const addrHtml   = isAdmin && job.customer_address ? `<span class="text-xs text-gray-400">${job.customer_address}</span>` : '';
+
+  // Staff: highlight if any machine is assigned to me
+  const mineIndicator = (!isAdmin && job.has_mine)
+    ? `<span class="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full font-semibold">📌 Has my work</span>` : '';
+
+  // Alert badge
+  const alertBadge = !allDelivered ? (() => {
+    if (job.all_repaired) return `<span class="text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full font-semibold">✅ Ready to Deliver</span>`;
+    const urgent = machines.some(m => m.status === 'Under Repair' && m.created_at && (Date.now() - new Date(m.created_at).getTime()) > 24*3600*1000);
+    if (urgent) return `<span class="text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full font-semibold">⚠️ Pending >24h</span>`;
+    return '';
+  })() : '';
+
+  const editBtn    = isAdmin ? `<button onclick="openEditJob('${job.job_id}')" class="action-btn bg-yellow-50 text-yellow-600 hover:bg-yellow-100" title="Edit"><i class="fas fa-edit text-xs"></i></button>` : '';
+  const deleteBtn  = isAdmin && userEmail === OWNER_EMAIL ? `<button onclick="deleteJob('${job.job_id}')" class="action-btn bg-red-50 text-red-500 hover:bg-red-100" title="Delete"><i class="fas fa-trash text-xs"></i></button>` : '';
+  const addMachBtn = isAdmin ? `<button onclick="openAddMachine('${job.job_id}')" class="action-btn-sm bg-blue-50 text-blue-600 hover:bg-blue-100"><i class="fas fa-plus text-xs"></i> Machine</button>` : '';
+  const deliverBtn = isAdmin && !allDelivered && job.all_repaired && machines.length > 0
+    ? `<button onclick="openDelivery('${job.job_id}')" class="action-btn-sm bg-indigo-600 text-white hover:bg-indigo-700"><i class="fas fa-truck text-xs"></i> Deliver</button>` : '';
+  const timelineBtn= `<button onclick="openTimeline('${job.job_id}')" class="action-btn-sm bg-gray-50 text-gray-500 hover:bg-gray-100" title="Timeline"><i class="fas fa-history text-xs"></i></button>`;
+  const barcodeBtn = `<button onclick="showBarcode('${job.job_id}')" class="action-btn-sm bg-gray-50 text-gray-600 hover:bg-gray-100" title="Barcode"><i class="fas fa-barcode text-xs"></i></button>`;
+
+  const waRegBtn = isAdmin ? `<button onclick="shareWhatsApp('${job.job_id}','register')" class="action-btn-sm bg-green-600 text-white hover:bg-green-700" title="Share registration"><i class="fab fa-whatsapp text-xs"></i> Register</button>` : '';
+  const waDelBtn = isAdmin && allDelivered ? `<button onclick="shareWhatsApp('${job.job_id}','delivered')" class="action-btn-sm bg-green-700 text-white hover:bg-green-800"><i class="fab fa-whatsapp text-xs"></i> Delivered</button>` : '';
+  const jpgBtn   = isAdmin ? `<button onclick="generateJobCardImage('${job.job_id}')" class="action-btn-sm bg-purple-50 text-purple-600 hover:bg-purple-100"><i class="fas fa-image text-xs"></i> JPG</button>` : '';
+
+  const bulkCb = bulkMode ? `<input type="checkbox" id="bulk-cb-${job.job_id}" ${bulkSelected.has(job.job_id)?'checked':''} onclick="toggleBulkSelect('${job.job_id}')" class="w-4 h-4 text-blue-600 mr-2 flex-shrink-0 rounded">` : '';
+  const cardBg = allDelivered ? 'job-card-delivered' : `bg-white ${alertClass}`;
+
+  return `<div class="${cardBg} rounded-xl border border-gray-200 shadow-sm overflow-hidden" id="job-card-${job.job_id}">
+    <div class="flex items-start justify-between p-4 pb-2">
+      <div class="flex items-start gap-1.5 flex-1 min-w-0">
+        ${bulkCb}
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap mb-1">
+            <span class="font-black text-blue-600 text-base">${job.job_id}</span>
+            ${allDelivered ? `<span class="status-badge status-delivered">🔵 Delivered</span>` : ''}
+            ${alertBadge}
+            ${mineIndicator}
+          </div>
+          <p class="font-bold text-gray-800 text-sm">${job.customer_name}</p>
+          <div class="flex flex-wrap gap-2 mt-0.5">${mobileHtml}${addrHtml}</div>
+          ${job.notes ? `<p class="text-xs text-gray-400 mt-1 italic">${job.notes}</p>` : ''}
+        </div>
+      </div>
+      <div class="flex items-center gap-1 ml-2">${editBtn}${deleteBtn}</div>
+    </div>
+    ${isAdmin ? `<div class="px-4 pb-2 flex items-center justify-between flex-wrap gap-2">${totalsHtml}<span class="text-xs text-gray-400">${fmtDate(job.created_at)}</span></div>` : `<div class="px-4 pb-2"><span class="text-xs text-gray-400">${fmtDate(job.created_at)}</span></div>`}
+    <div class="border-t border-gray-100 divide-y divide-gray-50">${machinesHtml}</div>
+    <div class="flex items-center gap-2 px-4 py-3 border-t border-gray-100 flex-wrap">
+      ${addMachBtn}${deliverBtn}${timelineBtn}${barcodeBtn}${jpgBtn}${waRegBtn}${waDelBtn}
+    </div>
+  </div>`;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   OVERRIDE saveMachine to include audio_note
+───────────────────────────────────────────────────────────────────────────── */
+async function saveMachine() {
+  const desc         = document.getElementById('machine-desc').value.trim();
+  const status       = document.getElementById('machine-status').value;
+  const workDone     = document.getElementById('machine-work-done').value.trim();
+  const returnReason = document.getElementById('machine-return-reason').value.trim();
+  if (!desc) { showToast('Description required', 'error'); return; }
+  if (status === 'Repaired' && !workDone)     { showToast('Work done is required for Repaired status', 'error'); return; }
+  if (status === 'Return'   && !returnReason) { showToast('Return reason is required', 'error'); return; }
+
+  const imgEl   = document.getElementById('machine-image-preview');
+  const imgData = imgEl.classList.contains('hidden') ? null : (imgEl.src || null);
+  const cleanImg = imgData && imgData.length > 50 ? imgData : null;
+
+  const body = {
+    description:    desc,
+    condition_text: document.getElementById('machine-condition').value.trim() || null,
+    quantity:       parseInt(document.getElementById('machine-qty').value) || 1,
+    unit_price:     parseFloat(document.getElementById('machine-price').value) || 0,
+    assigned_to:    document.getElementById('machine-assigned-to').value.trim() || null,
+    status,
+    work_done:      workDone     || null,
+    return_reason:  returnReason || null,
+    image_data:     cleanImg,
+    audio_note:     currentAudioBase64 || null
+  };
+
+  const spinner = document.getElementById('machine-save-spinner');
+  const btnText = document.getElementById('machine-save-btn-text');
+  spinner.classList.remove('hidden'); btnText.textContent = 'Saving…';
+  try {
+    let resp;
+    if (currentMachineId) {
+      resp = await apiFetch(`/api/jobs/${currentMachineJobId}/machines/${currentMachineId}`, { method:'PUT', body: JSON.stringify(body) });
+    } else {
+      resp = await apiFetch(`/api/jobs/${currentMachineJobId}/machines`, { method:'POST', body: JSON.stringify(body) });
+    }
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || data.detail || 'Failed to save machine');
+    resetAudioRecorder();
+    closeModal('machine-modal');
+    showToast(currentMachineId ? 'Machine updated ✓' : 'Machine added ✓', 'success');
+    await loadJobs();
+  } catch (err) {
+    if (err.message === 'offline_queued') { closeModal('machine-modal'); showToast('Queued for sync', 'warning'); resetAudioRecorder(); }
+    else showToast(err.message || 'Failed to save machine', 'error');
+  } finally {
+    spinner.classList.add('hidden');
+    btnText.textContent = currentMachineId ? 'Save Changes' : 'Add Machine';
+  }
+}
+
+/* Reset audio on close */
+const _origCloseModal = closeModal;
+function closeModal(id) {
+  if (id === 'machine-modal') resetAudioRecorder();
+  const m = document.getElementById(id); if (m) m.classList.add('hidden');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   ALERT COLOR CSS (injected at runtime)
+───────────────────────────────────────────────────────────────────────────── */
+(function injectAlertCSS() {
+  const style = document.createElement('style');
+  style.textContent = `
+    .job-alert-green { box-shadow: 0 0 0 2px #16a34a40 !important; border-color: #16a34a88 !important; }
+    .job-alert-red   { box-shadow: 0 0 0 2px #dc262640 !important; border-color: #dc262688 !important; }
+    .job-alert-yellow{ box-shadow: 0 0 0 2px #d9770640 !important; border-color: #d9770688 !important; }
+    .thumb-img { width:48px;height:48px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;cursor:pointer;flex-shrink:0; }
+  `;
+  document.head.appendChild(style);
+})();
 
 /* ─────────────────────────────────────────────────────────────────────────────
    INIT

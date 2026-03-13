@@ -10,19 +10,20 @@
   <meta name="apple-mobile-web-app-title" content="adition"/>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
   <link rel="manifest" href="/manifest.json"/>
-  <title>adition</title>
+  <title>adition — Electric Service Manager</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
   <link rel="stylesheet" href="/static/style.css"/>
 </head>
 <body class="min-h-screen bg-gray-50">
 
+<!-- SYSTEM BANNERS -->
 <div id="offline-banner"><i class="fas fa-wifi-slash mr-2"></i>Offline — actions queued, will sync on reconnect</div>
-<div id="sync-badge" onclick="manualSync()"><i class="fas fa-sync-alt"></i><span id="sync-count">0</span> pending</div>
+<div id="sync-badge" onclick="manualSync()" title="Pending sync items"><i class="fas fa-sync-alt"></i><span id="sync-count">0</span> pending</div>
 <div id="print-area"></div>
 
-<!-- LOGIN -->
-<div id="login-screen" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+<!-- ════════════════════════════════ LOGIN ════════════════════════════════ -->
+<div id="login-screen" class="hidden min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
   <div class="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
     <div class="text-center mb-8">
       <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl mb-4 shadow-lg">
@@ -55,12 +56,12 @@
       </button>
     </form>
     <p class="text-center text-xs text-gray-400 mt-6">adition™ since 1984 © 2026</p>
-    <p class="text-center text-xs text-gray-300 mt-1">Gheekanta, Ahmedabad</p>
   </div>
 </div>
 
-<!-- MAIN APP -->
+<!-- ════════════════════════════════ MAIN APP ════════════════════════════════ -->
 <div id="app-screen" class="hidden min-h-screen flex flex-col">
+  <!-- NAV -->
   <nav class="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-sm">
     <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
       <div class="flex items-center gap-3">
@@ -70,39 +71,62 @@
           <p class="text-xs text-blue-500 font-medium" id="nav-user-info">Service Manager</p>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-1.5">
         <span id="role-badge" class="hidden text-xs font-semibold px-2 py-1 rounded-full"></span>
+        <button onclick="openRapidEntry()" id="rapid-entry-btn" class="hidden admin-only-el text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg p-2" title="Rapid Job Entry"><i class="fas fa-bolt text-sm"></i></button>
+        <button onclick="openSystemHealth()" id="health-btn" class="hidden admin-only-el text-gray-500 hover:text-teal-600 hover:bg-teal-50 rounded-lg p-2" title="System Health"><i class="fas fa-heartbeat text-sm"></i></button>
+        <button onclick="openAnalytics()" id="analytics-btn" class="hidden admin-only-el text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg p-2" title="Analytics"><i class="fas fa-chart-bar text-sm"></i></button>
         <button onclick="openAdminTools()" id="admin-tools-btn" class="hidden text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg p-2" title="Admin Tools"><i class="fas fa-tools text-sm"></i></button>
-        <button onclick="openReportCenter()" id="report-btn" class="hidden text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg p-2" title="Reports"><i class="fas fa-chart-bar text-sm"></i></button>
+        <button onclick="openReportCenter()" id="report-btn" class="hidden text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg p-2" title="Reports"><i class="fas fa-file-chart-bar text-sm"></i></button>
         <button onclick="handleLogout()" class="text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-lg p-2" title="Logout"><i class="fas fa-sign-out-alt text-sm"></i></button>
       </div>
     </div>
   </nav>
 
   <main class="flex-1 max-w-5xl mx-auto w-full px-4 py-5">
-    <div class="flex items-center justify-between mb-4">
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
       <div>
         <h2 class="text-xl font-bold text-gray-800">Job Dashboard</h2>
         <p id="job-count-text" class="text-sm text-gray-400 mt-0.5">Loading...</p>
       </div>
-      <button id="new-job-btn" onclick="openNewJobModal()" class="hidden admin-only-el bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm">
-        <i class="fas fa-plus"></i> New Job
-      </button>
+      <div class="flex items-center gap-2">
+        <!-- Bulk select toggle -->
+        <button id="bulk-toggle-btn" onclick="toggleBulkMode()" class="hidden admin-only-el text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"><i class="fas fa-check-square mr-1"></i> Select</button>
+        <button id="new-job-btn" onclick="openNewJobModal()" class="hidden admin-only-el bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm">
+          <i class="fas fa-plus"></i> New Job
+        </button>
+      </div>
     </div>
 
+    <!-- Bulk actions bar -->
+    <div id="bulk-actions-bar" class="hidden bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 flex items-center gap-3 flex-wrap">
+      <span class="text-sm text-blue-700 font-semibold"><span id="bulk-count">0</span> selected</span>
+      <button onclick="bulkAction('export')" class="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700"><i class="fas fa-download mr-1"></i> Export</button>
+      <button onclick="bulkAction('archive')" class="text-xs bg-red-500 text-white px-3 py-1.5 rounded-lg hover:bg-red-600"><i class="fas fa-archive mr-1"></i> Archive</button>
+      <button onclick="selectAllJobs()" class="text-xs border border-blue-300 text-blue-700 px-3 py-1.5 rounded-lg hover:bg-blue-100">Select All</button>
+      <button onclick="toggleBulkMode()" class="ml-auto text-xs text-gray-500 hover:text-gray-700"><i class="fas fa-times"></i> Cancel</button>
+    </div>
+
+    <!-- Tab bar -->
     <div class="bg-white rounded-xl border border-gray-200 mb-4 shadow-sm overflow-hidden">
       <div class="flex border-b border-gray-100">
         <button id="tab-active" onclick="switchTab('active')" class="tab-btn active flex-1 py-3 text-sm font-semibold text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-2">
-          <i class="fas fa-wrench text-xs"></i> Active Jobs <span id="active-tab-count" class="bg-blue-100 text-blue-600 text-xs font-bold px-2 py-0.5 rounded-full"></span>
+          <i class="fas fa-wrench text-xs"></i> Active <span id="active-tab-count" class="bg-blue-100 text-blue-600 text-xs font-bold px-2 py-0.5 rounded-full"></span>
         </button>
         <button id="tab-delivered" onclick="switchTab('delivered')" class="tab-btn hidden admin-only-el flex-1 py-3 text-sm font-semibold text-gray-400 hover:bg-blue-50 flex items-center justify-center gap-2">
           <i class="fas fa-truck text-xs"></i> Delivered <span id="delivered-tab-count" class="bg-indigo-100 text-indigo-600 text-xs font-bold px-2 py-0.5 rounded-full"></span>
         </button>
       </div>
-      <div id="active-filter-bar" class="p-3 flex flex-wrap gap-3 items-center">
-        <div class="flex-1 min-w-48 relative">
+      <!-- Active filter bar -->
+      <div id="active-filter-bar" class="p-3 flex flex-wrap gap-2 items-center">
+        <div class="flex-1 min-w-44 relative">
           <i class="fas fa-search absolute left-3 top-2.5 text-gray-400 text-sm"></i>
-          <input id="search-input" type="text" placeholder="Search by ID, customer, description..." oninput="filterJobs()" class="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-blue-400"/>
+          <input id="search-input" type="text" placeholder="Search ID, customer, machine..." oninput="filterJobs()"
+            class="w-full pl-9 pr-9 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-blue-400"/>
+          <!-- Barcode scanner icon in search -->
+          <button onclick="openBarcodeScanner()" class="absolute right-2 top-1.5 text-gray-400 hover:text-blue-500 p-1" title="Scan barcode">
+            <i class="fas fa-camera text-sm"></i>
+          </button>
         </div>
         <select id="status-filter" onchange="onStatusFilterChange()" class="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600 outline-none">
           <option value="">All Active</option>
@@ -115,18 +139,18 @@
           <option value="Staff 1">Staff 1</option><option value="Staff 2">Staff 2</option>
           <option value="Staff 3">Staff 3</option><option value="Staff 4">Staff 4</option>
         </select>
-        <button onclick="loadJobs()" class="text-blue-500 hover:text-blue-700 text-sm flex items-center gap-1 px-2"><i class="fas fa-sync-alt text-xs"></i> Refresh</button>
-        <!-- Staff: Assigned to Me filter -->
+        <button onclick="loadJobs()" class="text-blue-500 hover:text-blue-700 text-sm flex items-center gap-1 px-2"><i class="fas fa-sync-alt text-xs"></i></button>
         <div id="my-filter-row" class="hidden flex items-center">
           <button id="my-filter-btn" onclick="toggleMyFilter()" class="text-xs px-3 py-1.5 rounded-full font-semibold border border-blue-300 text-blue-600 hover:bg-blue-50">🔧 Assigned to Me</button>
         </div>
       </div>
-      <div id="delivered-filter-bar" class="hidden p-3 flex flex-wrap gap-3 items-center">
-        <div class="flex-1 min-w-48 relative">
+      <!-- Delivered filter bar -->
+      <div id="delivered-filter-bar" class="hidden p-3 flex flex-wrap gap-2 items-center">
+        <div class="flex-1 min-w-44 relative">
           <i class="fas fa-search absolute left-3 top-2.5 text-gray-400 text-sm"></i>
-          <input id="delivered-search" type="text" placeholder="Search delivered jobs..." oninput="filterDelivered()" class="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-blue-400"/>
+          <input id="delivered-search" type="text" placeholder="Search delivered..." oninput="filterDelivered()" class="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-blue-400"/>
         </div>
-        <button onclick="loadJobs()" class="text-blue-500 hover:text-blue-700 text-sm flex items-center gap-1 px-2"><i class="fas fa-sync-alt text-xs"></i> Refresh</button>
+        <button onclick="loadJobs()" class="text-blue-500 hover:text-blue-700 text-sm flex items-center gap-1 px-2"><i class="fas fa-sync-alt text-xs"></i></button>
       </div>
     </div>
 
@@ -139,7 +163,7 @@
 <!-- AUTOCOMPLETE DROPDOWN -->
 <div id="autocomplete-dropdown" class="hidden fixed z-[9999] bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden" style="min-width:280px"></div>
 
-<!-- NEW JOB MODAL -->
+<!-- ════════ NEW JOB MODAL ════════ -->
 <div id="new-job-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in">
     <div class="flex items-center justify-between p-5 border-b border-gray-100">
@@ -153,7 +177,7 @@
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Mobile Number</label>
-        <input id="new-customer-mobile" type="tel" placeholder="Mobile (autocomplete)" autocomplete="off" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+        <input id="new-customer-mobile" type="tel" placeholder="Mobile (auto-fills name/address)" autocomplete="off" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Address</label>
@@ -173,7 +197,51 @@
   </div>
 </div>
 
-<!-- EDIT JOB MODAL -->
+<!-- ════════ RAPID JOB ENTRY MODAL ════════ -->
+<div id="rapid-entry-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl fade-in max-h-[92vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-bolt text-yellow-500 mr-2"></i>Rapid Job Entry</h3>
+      <button onclick="closeModal('rapid-entry-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-4">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Mobile <span class="text-red-500">*</span></label>
+          <input id="re-mobile" type="tel" placeholder="Mobile number" autocomplete="off" oninput="rapidMobileLookup()" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Customer Name <span class="text-red-500">*</span></label>
+          <input id="re-name" type="text" placeholder="Customer name" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Address</label>
+          <input id="re-address" type="text" placeholder="Area, landmark" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+        <input id="re-notes" type="text" placeholder="Optional notes" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/>
+      </div>
+      <!-- Machines list -->
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <label class="text-sm font-semibold text-gray-700">Machines</label>
+          <button onclick="addRapidMachine()" class="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-100 font-medium"><i class="fas fa-plus mr-1"></i>Add Machine</button>
+        </div>
+        <div id="rapid-machines-list" class="space-y-3"></div>
+      </div>
+    </div>
+    <div class="flex gap-3 p-5 border-t border-gray-100 sticky bottom-0 bg-white">
+      <button onclick="closeModal('rapid-entry-modal')" class="flex-1 border border-gray-200 text-gray-600 rounded-lg py-2.5 text-sm font-medium">Cancel</button>
+      <button onclick="submitRapidEntry()" class="flex-1 bg-green-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-green-700 flex items-center justify-center gap-2">
+        <span id="re-btn-text">Create Job & Machines</span><div id="re-spinner" class="spinner w-4 h-4 hidden"></div>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ EDIT JOB MODAL ════════ -->
 <div id="edit-job-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in max-h-[90vh] overflow-y-auto">
     <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
@@ -195,16 +263,14 @@
   </div>
 </div>
 
-<!-- MACHINE MODAL -->
+<!-- ════════ MACHINE MODAL ════════ -->
 <div id="machine-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[92vh] overflow-y-auto">
     <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
-      <h3 id="machine-modal-title" class="text-lg font-bold text-gray-800"><i class="fas fa-cog text-blue-500 mr-2"></i>Add Machine</h3>
+      <h3 id="machine-modal-title" class="text-lg font-bold text-gray-800"><i class="fas fa-cog text-blue-500 mr-2"></i>Machine</h3>
       <button onclick="closeModal('machine-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
     </div>
     <div class="p-5 space-y-4">
-      <input id="machine-modal-job-id" type="hidden"/>
-      <input id="machine-modal-machine-id" type="hidden"/>
       <div><label class="block text-sm font-medium text-gray-700 mb-1">Description <span class="text-red-500">*</span></label>
         <input id="machine-desc" type="text" placeholder="e.g., Ceiling Fan, Motor, Pump..." class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400"/></div>
       <div><label class="block text-sm font-medium text-gray-700 mb-1">Condition / Problem</label>
@@ -231,27 +297,42 @@
       </div>
       <div id="work-done-row" class="hidden">
         <label class="block text-sm font-medium text-gray-700 mb-1">Work Done <span class="text-red-500">*</span></label>
-        <div class="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-2"><i class="fas fa-lock mr-1"></i>Internal only — not printed on job card</div>
+        <div class="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-2 flex items-center gap-2">
+          <i class="fas fa-lock"></i> Internal only
+          <button onclick="getAISuggestions()" class="ml-auto text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-semibold hover:bg-purple-200"><i class="fas fa-magic mr-1"></i>AI Suggest</button>
+        </div>
         <textarea id="machine-work-done" placeholder="Describe the repair performed..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
+        <div id="ai-suggestions-box" class="hidden mt-2 bg-purple-50 rounded-xl p-3 space-y-1.5"></div>
       </div>
       <div id="return-reason-row" class="hidden">
         <label class="block text-sm font-medium text-gray-700 mb-1">Return Reason <span class="text-red-500">*</span></label>
-        <div class="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-2"><i class="fas fa-lock mr-1"></i>Internal only</div>
         <textarea id="machine-return-reason" placeholder="Reason for return..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Internal Notes</label>
-        <div class="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 mb-2"><i class="fas fa-sticky-note mr-1"></i>Internal only — not shown on job card</div>
-        <textarea id="machine-internal-notes" placeholder="Internal notes (optional)..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
+        <textarea id="machine-internal-notes" placeholder="Internal notes (not shown on job card)..." rows="2" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm resize-none outline-none focus:border-blue-400"></textarea>
       </div>
-      <div id="image-upload-row" class="hidden">
-        <label class="block text-sm font-medium text-gray-700 mb-1">Machine Image</label>
+      <!-- Audio note -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Audio Complaint Note</label>
+        <div class="flex items-center gap-3">
+          <button id="audio-record-btn" onclick="toggleAudioRecord()" class="text-xs bg-red-50 text-red-600 hover:bg-red-100 px-3 py-2 rounded-lg font-semibold flex items-center gap-1.5 border border-red-200">
+            <i id="audio-icon" class="fas fa-microphone"></i><span id="audio-btn-text">Record</span>
+          </button>
+          <span id="audio-timer" class="text-xs text-gray-400 hidden">0:00</span>
+          <span id="audio-saved-indicator" class="text-xs text-green-600 hidden"><i class="fas fa-check-circle mr-1"></i>Audio saved</span>
+        </div>
+      </div>
+      <!-- Multiple images -->
+      <div id="image-upload-row">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Machine Images <span class="text-xs text-gray-400">(multiple)</span></label>
+        <div id="image-gallery" class="flex flex-wrap gap-2 mb-2"></div>
         <div id="image-upload-area" class="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50" onclick="document.getElementById('machine-image-input').click()">
-          <div id="image-preview-container"><i class="fas fa-cloud-upload-alt text-gray-300 text-3xl mb-2"></i><p class="text-sm text-gray-400">Click to upload</p><p class="text-xs text-gray-300 mt-1">Auto-compressed</p></div>
+          <div id="image-preview-container"><i class="fas fa-cloud-upload-alt text-gray-300 text-3xl mb-2"></i><p class="text-sm text-gray-400">Click to upload (300–500KB, auto-compressed)</p></div>
           <img id="machine-image-preview" class="hidden max-h-32 mx-auto rounded-lg" alt="Preview"/>
         </div>
-        <input id="machine-image-input" type="file" accept="image/*" class="hidden" onchange="handleImageUpload(this)"/>
-        <button id="remove-image-btn" onclick="removeImage()" class="hidden mt-2 text-red-400 hover:text-red-600 text-xs flex items-center gap-1"><i class="fas fa-trash"></i> Remove Image</button>
+        <input id="machine-image-input" type="file" accept="image/*" multiple class="hidden" onchange="handleImageUpload(this)"/>
+        <button id="remove-image-btn" onclick="removeImage()" class="hidden mt-2 text-red-400 hover:text-red-600 text-xs flex items-center gap-1"><i class="fas fa-trash"></i> Remove</button>
       </div>
     </div>
     <div class="flex gap-3 p-5 border-t border-gray-100 sticky bottom-0 bg-white">
@@ -263,7 +344,7 @@
   </div>
 </div>
 
-<!-- IMAGE VIEWER -->
+<!-- ════════ IMAGE VIEWER ════════ -->
 <div id="image-viewer-modal" class="fixed inset-0 bg-black/80 z-[100] hidden flex items-center justify-center p-4" onclick="closeModal('image-viewer-modal')">
   <div class="relative max-w-2xl max-h-full">
     <img id="image-viewer-img" src="" alt="" class="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain"/>
@@ -271,7 +352,74 @@
   </div>
 </div>
 
-<!-- DELIVERY MODAL -->
+<!-- ════════ MACHINE TIMELINE MODAL ════════ -->
+<div id="timeline-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in max-h-[85vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-history text-indigo-500 mr-2"></i>Job Timeline</h3>
+      <button onclick="closeModal('timeline-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="timeline-content" class="p-5"></div>
+  </div>
+</div>
+
+<!-- ════════ BARCODE MODAL ════════ -->
+<div id="barcode-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm fade-in">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-barcode text-gray-700 mr-2"></i>Job Barcode</h3>
+      <button onclick="closeModal('barcode-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-6 text-center">
+      <div id="barcode-container" class="bg-white p-4 rounded-xl inline-block mb-3 border border-gray-200"></div>
+      <p id="barcode-job-id-text" class="text-2xl font-black text-gray-800 mb-4"></p>
+      <div class="flex gap-3">
+        <button onclick="downloadBarcode()" class="flex-1 bg-gray-800 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-gray-900"><i class="fas fa-download mr-1"></i> Download</button>
+        <button onclick="printBarcode()" class="flex-1 bg-blue-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-blue-700"><i class="fas fa-print mr-1"></i> Print</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ BARCODE SCANNER MODAL ════════ -->
+<div id="scanner-modal" class="fixed inset-0 bg-black/90 z-[200] hidden flex flex-col items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm fade-in overflow-hidden">
+    <div class="flex items-center justify-between p-4 border-b border-gray-100">
+      <h3 class="font-bold text-gray-800"><i class="fas fa-camera text-blue-500 mr-2"></i>Scan Job Barcode</h3>
+      <button onclick="stopScanner()" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="relative">
+      <video id="scanner-video" class="w-full" autoplay playsinline muted style="max-height:300px;object-fit:cover;"></video>
+      <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div class="border-2 border-blue-400 rounded-lg w-48 h-20 opacity-70"></div>
+      </div>
+    </div>
+    <div class="p-4">
+      <p id="scanner-status" class="text-sm text-gray-500 text-center">Point camera at barcode...</p>
+      <p class="text-xs text-gray-400 text-center mt-2">Or enter job ID manually:</p>
+      <div class="flex gap-2 mt-2">
+        <input id="scanner-manual-input" type="text" placeholder="C-001" class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400"/>
+        <button onclick="jumpToJob(document.getElementById('scanner-manual-input').value)" class="bg-blue-600 text-white rounded-lg px-3 py-2 text-sm font-semibold">Go</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ CUSTOMER LOOKUP MODAL ════════ -->
+<div id="customer-lookup-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in max-h-[85vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-user-search text-blue-500 mr-2"></i>Customer Lookup</h3>
+      <button onclick="closeModal('customer-lookup-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5">
+      <input id="lookup-mobile" type="tel" placeholder="Type mobile number..." oninput="customerLookup()" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-blue-400 mb-4"/>
+      <div id="lookup-result" class="space-y-3"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ DELIVERY MODAL ════════ -->
 <div id="delivery-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in max-h-[92vh] overflow-y-auto">
     <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
@@ -294,8 +442,8 @@
         <div><label class="block text-sm font-medium text-gray-700 mb-1">Relation</label><input id="delivery-relation" type="text" placeholder="e.g. Self, Son" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
       </div>
       <div id="delivery-courier-fields" class="hidden space-y-3">
-        <div><label class="block text-sm font-medium text-gray-700 mb-1">Shipping Service</label><input id="delivery-service" type="text" placeholder="e.g. DTDC, BlueDart (optional)" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
-        <div><label class="block text-sm font-medium text-gray-700 mb-1">Tracking ID</label><input id="delivery-tracking" type="text" placeholder="Tracking number (optional)" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Courier Service</label><input id="delivery-service" type="text" placeholder="e.g. DTDC, BlueDart (optional)" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">Tracking ID</label><input id="delivery-tracking" type="text" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
         <div><label class="block text-sm font-medium text-gray-700 mb-1">Driver Name</label><input id="delivery-driver" type="text" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
         <div><label class="block text-sm font-medium text-gray-700 mb-1">Driver Contact</label><input id="delivery-driver-contact" type="tel" placeholder="Optional" class="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none"/></div>
       </div>
@@ -307,14 +455,79 @@
   </div>
 </div>
 
-<!-- ADMIN TOOLS MODAL -->
+<!-- ════════ SYSTEM HEALTH MODAL ════════ -->
+<div id="health-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md fade-in max-h-[85vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-heartbeat text-teal-500 mr-2"></i>System Health</h3>
+      <button onclick="closeModal('health-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="health-content" class="p-5">
+      <div class="text-center py-6"><div class="spinner w-8 h-8 mx-auto mb-2"></div><p class="text-sm text-gray-400">Loading health data...</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ ANALYTICS MODAL ════════ -->
+<div id="analytics-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl fade-in max-h-[92vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-chart-bar text-purple-500 mr-2"></i>Customer Analytics</h3>
+      <button onclick="closeModal('analytics-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="p-5 space-y-4">
+      <div class="flex gap-3 items-end">
+        <div class="flex-1"><label class="block text-xs text-gray-600 mb-1">From</label><input id="analytics-from" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+        <div class="flex-1"><label class="block text-xs text-gray-600 mb-1">To</label><input id="analytics-to" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
+        <button onclick="loadAnalytics()" class="bg-purple-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-purple-700">Load</button>
+        <button onclick="exportAnalyticsCsv()" class="bg-green-600 text-white rounded-lg px-3 py-2 text-sm font-semibold hover:bg-green-700"><i class="fas fa-download"></i></button>
+      </div>
+      <div id="analytics-overview" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-2"></div>
+      <div class="overflow-x-auto rounded-xl border border-gray-200">
+        <table class="w-full text-xs">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2 text-left font-semibold text-gray-600">Customer</th>
+              <th class="px-3 py-2 text-left font-semibold text-gray-600">Mobile</th>
+              <th class="px-3 py-2 text-center font-semibold text-gray-600">Jobs</th>
+              <th class="px-3 py-2 text-center font-semibold text-gray-600">Machines</th>
+              <th class="px-3 py-2 text-right font-semibold text-gray-600">Revenue</th>
+            </tr>
+          </thead>
+          <tbody id="analytics-table-body"><tr><td colspan="5" class="text-center py-8 text-gray-400">Click Load to view data</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ TRASH MODAL ════════ -->
+<div id="trash-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[85vh] overflow-y-auto">
+    <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
+      <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-trash-restore text-orange-500 mr-2"></i>Trash (30-day recovery)</h3>
+      <button onclick="closeModal('trash-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="trash-content" class="p-5">
+      <div class="text-center py-6"><div class="spinner w-8 h-8 mx-auto mb-2"></div><p class="text-sm text-gray-400">Loading...</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ ADMIN TOOLS MODAL ════════ -->
 <div id="admin-tools-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg fade-in max-h-[92vh] overflow-y-auto">
     <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
       <h3 class="text-lg font-bold text-gray-800"><i class="fas fa-tools text-blue-500 mr-2"></i>Admin Tools</h3>
       <button onclick="closeModal('admin-tools-modal')" class="text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100"><i class="fas fa-times"></i></button>
     </div>
-    <div class="p-5 space-y-5">
+    <div class="p-5 space-y-4">
+      <!-- Customer Lookup -->
+      <div class="bg-blue-50 rounded-xl p-4">
+        <h4 class="font-semibold text-gray-800 mb-2"><i class="fas fa-user-search text-blue-500 mr-2"></i>Customer Lookup</h4>
+        <button onclick="closeModal('admin-tools-modal');openModal('customer-lookup-modal')" class="w-full bg-blue-600 text-white rounded-lg py-2 text-sm font-semibold hover:bg-blue-700">Open Customer Lookup</button>
+      </div>
+      <!-- Export -->
       <div class="bg-blue-50 rounded-xl p-4">
         <h4 class="font-semibold text-gray-800 mb-3"><i class="fas fa-download text-blue-500 mr-2"></i>Export Data</h4>
         <div class="grid grid-cols-2 gap-3 mb-3">
@@ -322,18 +535,29 @@
           <div><label class="block text-xs text-gray-600 mb-1">To</label><input id="export-to" type="date" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
         </div>
         <div class="mb-3"><label class="block text-xs text-gray-600 mb-1">Or by Month</label><input id="export-month" type="month" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none"/></div>
-        <p class="text-xs text-gray-400 mb-3">Leave blank to export all. Images included as Base64.</p>
         <button onclick="exportData()" class="w-full bg-blue-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-blue-700 flex items-center justify-center gap-2"><i class="fas fa-file-csv"></i> Export CSV</button>
       </div>
+      <!-- Monthly backup -->
+      <div class="bg-teal-50 rounded-xl p-4">
+        <h4 class="font-semibold text-gray-800 mb-2"><i class="fas fa-database text-teal-500 mr-2"></i>Monthly Backup</h4>
+        <p class="text-xs text-gray-500 mb-2">Generate backup_YYYY_MM.csv for all current data.</p>
+        <button onclick="runMonthlyBackup()" class="w-full bg-teal-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-teal-700 flex items-center justify-center gap-2"><i class="fas fa-cloud-download-alt"></i> Create Backup Now</button>
+      </div>
+      <!-- Restore -->
       <div class="bg-green-50 rounded-xl p-4">
         <h4 class="font-semibold text-gray-800 mb-2"><i class="fas fa-upload text-green-500 mr-2"></i>Import / Restore CSV</h4>
-        <p class="text-xs text-gray-500 mb-3">Restore data from exported CSV. Prevents duplicates via UPSERT.</p>
         <input id="restore-csv-file" type="file" accept=".csv" class="hidden" onchange="handleRestoreCsv(this)"/>
         <button onclick="document.getElementById('restore-csv-file').click()" class="w-full bg-green-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-green-700 flex items-center justify-center gap-2"><i class="fas fa-file-upload"></i> Upload & Restore CSV</button>
       </div>
+      <!-- Trash -->
+      <div class="bg-orange-50 rounded-xl p-4">
+        <h4 class="font-semibold text-gray-800 mb-2"><i class="fas fa-trash-restore text-orange-500 mr-2"></i>Trash / Soft-Delete Recovery</h4>
+        <button onclick="closeModal('admin-tools-modal');openTrash()" class="w-full border border-orange-300 text-orange-700 rounded-lg py-2 text-sm font-medium hover:bg-orange-100">Open Trash</button>
+      </div>
+      <!-- Sync Queue -->
       <div class="bg-amber-50 rounded-xl p-4">
         <h4 class="font-semibold text-gray-800 mb-2"><i class="fas fa-sync-alt text-amber-500 mr-2"></i>Offline Sync Queue</h4>
-        <div id="queue-list" class="space-y-2 max-h-40 overflow-y-auto mb-3"></div>
+        <div id="queue-list" class="space-y-2 max-h-32 overflow-y-auto mb-3"></div>
         <button onclick="manualSync()" class="w-full border border-amber-300 text-amber-700 rounded-lg py-2 text-sm font-medium hover:bg-amber-100"><i class="fas fa-sync-alt mr-1"></i> Sync Now</button>
       </div>
       <div id="cleanup-section" class="hidden bg-red-50 rounded-xl p-4">
@@ -351,7 +575,7 @@
   </div>
 </div>
 
-<!-- REPORT MODAL -->
+<!-- ════════ REPORT MODAL ════════ -->
 <div id="report-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl fade-in max-h-[92vh] overflow-y-auto">
     <div class="flex items-center justify-between p-5 border-b border-gray-100 sticky top-0 bg-white z-10">
@@ -399,12 +623,12 @@
           </tr></thead><tbody id="report-table-body"></tbody></table>
         </div>
       </div>
-      <div id="report-empty" class="hidden text-center py-8 text-gray-400 text-sm">No results found for selected filters</div>
+      <div id="report-empty" class="hidden text-center py-8 text-gray-400 text-sm">No results for selected filters</div>
     </div>
   </div>
 </div>
 
-<!-- CONFIRM DIALOG -->
+<!-- ════════ CONFIRM DIALOG ════════ -->
 <div id="confirm-dialog" class="fixed inset-0 bg-black/50 z-[9999] hidden flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 fade-in text-center">
     <div class="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4"><i class="fas fa-exclamation-triangle text-red-500"></i></div>
@@ -417,14 +641,14 @@
   </div>
 </div>
 
-<!-- TOAST -->
+<!-- ════════ TOAST ════════ -->
 <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] hidden px-5 py-3 rounded-xl shadow-2xl text-sm font-semibold text-white max-w-sm text-center transition-all"></div>
 
-<!-- PRINT SPINNER -->
+<!-- ════════ PRINT SPINNER ════════ -->
 <div id="print-spinner" class="hidden fixed inset-0 bg-white/90 z-[9999] flex items-center justify-center flex-col gap-3">
   <div class="spinner w-12 h-12"></div>
   <p class="text-gray-600 font-semibold">Generating high-res image...</p>
-  <p class="text-gray-400 text-sm">Please wait, this takes a moment</p>
+  <p class="text-gray-400 text-sm">Please wait...</p>
 </div>
 
 <script src="/static/app.js"></script>
