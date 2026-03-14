@@ -11,7 +11,7 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/api/*', cors({ origin: '*', allowMethods: ['GET','POST','PUT','DELETE','OPTIONS'], allowHeaders: ['Content-Type','Authorization','X-Offline-Ts'] }))
 
-// ── DB initialisation — v11.0 schema ─────────────────────────────────────────
+// ── DB initialisation — v12.0 schema ─────────────────────────────────────────
 export async function initDB(db: D1Database) {
   const creates = [
     // Core tables
@@ -104,7 +104,26 @@ export async function initDB(db: D1Database) {
        deleted_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
        purge_at    DATETIME
      )`,
+    // ── NEW v12: Assignment requests ──────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS assignment_requests (
+       id           INTEGER  PRIMARY KEY AUTOINCREMENT,
+       machine_id   INTEGER  NOT NULL,
+       job_id       TEXT     NOT NULL,
+       requested_by TEXT     NOT NULL,
+       current_staff TEXT,
+       status       TEXT     DEFAULT 'pending',
+       admin_note   TEXT,
+       created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+       resolved_at  DATETIME
+     )`,
+    // ── NEW v12: Dashboard snapshot cache ────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS dashboard_snapshot (
+       id         INTEGER PRIMARY KEY CHECK (id=1),
+       data       TEXT    NOT NULL,
+       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+     )`,
     // Indexes — jobs
+    `CREATE INDEX IF NOT EXISTS idx_jobs_status     ON jobs(deleted_at, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_jobs_mobile     ON jobs(customer_mobile)`,
     `CREATE INDEX IF NOT EXISTS idx_jobs_deleted    ON jobs(deleted_at)`,
@@ -121,6 +140,10 @@ export async function initDB(db: D1Database) {
     `CREATE INDEX IF NOT EXISTS idx_cust_mobile ON customer_profiles(mobile)`,
     // Indexes — machine_images
     `CREATE INDEX IF NOT EXISTS idx_mi_machine ON machine_images(machine_id)`,
+    // Indexes — assignment_requests
+    `CREATE INDEX IF NOT EXISTS idx_ar_machine ON assignment_requests(machine_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_ar_status  ON assignment_requests(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_ar_requestor ON assignment_requests(requested_by)`,
   ]
 
   for (const sql of creates) {
@@ -185,10 +208,23 @@ export async function refreshJobSummary(db: D1Database, jobId: string) {
   }
 }
 
-// Auto-init on every /api/* request
+// ── Helper: invalidate dashboard snapshot ────────────────────────────────────
+export async function invalidateDashboardSnapshot(db: D1Database) {
+  try {
+    await db.prepare(`DELETE FROM dashboard_snapshot WHERE id=1`).run()
+  } catch {}
+}
+
+// Auto-init on every /api/* request (skip heavy tables scan)
+let dbInitialized = false
 app.use('/api/*', async (c, next) => {
-  if (c.env?.DB) {
-    try { await initDB(c.env.DB) } catch (e) { console.error('DB init error:', e) }
+  if (c.env?.DB && !dbInitialized) {
+    try {
+      await initDB(c.env.DB)
+      dbInitialized = true
+    } catch (e) {
+      console.error('DB init error:', e)
+    }
   }
   await next()
 })
@@ -197,7 +233,7 @@ app.use('/api/*', async (c, next) => {
 app.get('/api/debug/schema', async (c) => {
   if (!c.env?.DB) return c.json({ error: 'No DB' }, 500)
   try {
-    const tables = ['jobs','machines','machine_images','machine_timeline','job_summary','customer_profiles','trash_items']
+    const tables = ['jobs','machines','machine_images','machine_timeline','job_summary','customer_profiles','trash_items','assignment_requests','dashboard_snapshot']
     const result: any = {}
     for (const t of tables) {
       try {
@@ -214,8 +250,10 @@ app.get('/api/debug/schema', async (c) => {
 app.post('/api/debug/repair', async (c) => {
   if (!c.env?.DB) return c.json({ error: 'No DB' }, 500)
   try {
+    dbInitialized = false
     await initDB(c.env.DB)
-    const tables = ['jobs','machines','job_summary']
+    dbInitialized = true
+    const tables = ['jobs','machines','job_summary','assignment_requests','dashboard_snapshot']
     const result: any = {}
     for (const t of tables) {
       try {
@@ -235,7 +273,7 @@ app.route('/api/admin',     adminRoutes)
 app.route('/api/customers', customerRoutes)
 app.route('/api/analytics', analyticsRoutes)
 
-app.get('/api/health', (c) => c.json({ status: 'ok', service: 'adition', version: '11.0.0' }))
+app.get('/api/health', (c) => c.json({ status: 'ok', service: 'adition', version: '12.0.0' }))
 app.get('/favicon.ico', (c) => new Response(null, { status: 204 }))
 app.get('/favicon.svg', (c) => new Response(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#1e40af"/><text x="50" y="68" font-size="60" text-anchor="middle" fill="white">&#9889;</text></svg>`,

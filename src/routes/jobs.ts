@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { verify } from 'hono/jwt'
-import { refreshJobSummary } from '../index'
+import { refreshJobSummary, invalidateDashboardSnapshot } from '../index'
 
 type Bindings = { DB: D1Database; JWT_SECRET: string }
 type Variables = { role: string; user: string; staff_name: string }
@@ -38,11 +38,29 @@ function safeNum(v: any, fallback = 0): number {
 
 function sanitizeMachine(m: any, role: string, staffName?: string) {
   const out: any = { ...m }
+  // Always strip image_data from list responses (too large) — only include in single machine fetches
+  delete out.image_data
   if (role !== 'admin') {
     delete out.unit_price
     delete out.delivery_info
     delete out.delivered_at
     delete out.return_reason
+    delete out.audio_note  // staff only see their own audio
+    if (out.status === 'Delivered') out.status = 'Repaired'
+    out.is_mine = out.assigned_to === staffName
+  }
+  return out
+}
+
+function sanitizeMachineFull(m: any, role: string, staffName?: string) {
+  const out: any = { ...m }
+  if (role !== 'admin') {
+    delete out.unit_price
+    delete out.delivery_info
+    delete out.delivered_at
+    delete out.return_reason
+    // Allow staff to see audio if it's their machine
+    if (out.assigned_to !== staffName) delete out.audio_note
     if (out.status === 'Delivered') out.status = 'Repaired'
     out.is_mine = out.assigned_to === staffName
   }
@@ -94,36 +112,43 @@ async function addTimeline(db: D1Database, machineId: number, jobId: string, eve
 }
 
 // ── GET /api/jobs ─────────────────────────────────────────────────────────────
+// Optimized: single batch queries, uses job_summary, strips image_data
 jobs.get('/', async (c) => {
   try {
     const db        = c.env.DB
     const role      = c.get('role')
     const staffName = c.get('staff_name')
 
-    let jobRows: any, machineRows: any, summaryRows: any
+    // Parallel fetch for speed
+    let jobRowsP: Promise<any>, machineRowsP: Promise<any>
 
     if (role === 'admin') {
-      jobRows     = await db.prepare(`SELECT * FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC`).all()
-      machineRows = await db.prepare(`SELECT * FROM machines WHERE deleted_at IS NULL ORDER BY created_at ASC`).all()
+      // Exclude image_data from list to reduce payload drastically
+      jobRowsP     = db.prepare(`SELECT id,job_id,customer_name,customer_mobile,customer_address,notes,amount_received,deleted_at,created_at,updated_at FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC`).all()
+      machineRowsP = db.prepare(`SELECT id,job_id,description,condition_text,quantity,unit_price,status,assigned_to,work_done,return_reason,delivery_info,delivered_at,audio_note,priority_flag,created_at,updated_at FROM machines WHERE deleted_at IS NULL ORDER BY created_at ASC`).all()
     } else {
-      jobRows = await db.prepare(
-        `SELECT DISTINCT j.* FROM jobs j
+      jobRowsP = db.prepare(
+        `SELECT DISTINCT j.id,j.job_id,j.customer_name,j.notes,j.created_at,j.updated_at FROM jobs j
          INNER JOIN machines m ON m.job_id = j.job_id
          WHERE m.status != 'Delivered' AND m.deleted_at IS NULL AND j.deleted_at IS NULL
          ORDER BY j.created_at DESC`
       ).all()
-      machineRows = await db.prepare(
-        `SELECT m.* FROM machines m WHERE m.status != 'Delivered' AND m.deleted_at IS NULL ORDER BY m.created_at ASC`
+      machineRowsP = db.prepare(
+        `SELECT id,job_id,description,condition_text,quantity,status,assigned_to,work_done,priority_flag,created_at,updated_at FROM machines WHERE status != 'Delivered' AND deleted_at IS NULL ORDER BY created_at ASC`
       ).all()
     }
 
-    // Load all summaries at once
-    summaryRows = await db.prepare(`SELECT * FROM job_summary`).all()
+    // Load all summaries in parallel
+    const summaryRowsP = db.prepare(`SELECT * FROM job_summary`).all()
+
+    const [jobRows, machineRows, summaryRows] = await Promise.all([jobRowsP, machineRowsP, summaryRowsP])
+
     const summaryMap: Record<string, any> = {}
     ;(summaryRows.results as any[]).forEach((s: any) => { summaryMap[s.job_id] = s })
 
+    const machineList = machineRows.results as any[]
     const jobList = (jobRows.results as any[]).map((job: any) => {
-      const mList = (machineRows.results as any[]).filter((m: any) => m.job_id === job.job_id)
+      const mList = machineList.filter((m: any) => m.job_id === job.job_id)
       return sanitizeJob(job, mList, role, staffName, summaryMap[job.job_id])
     })
     return c.json(jobList)
@@ -139,9 +164,9 @@ jobs.get('/all', async (c) => {
   try {
     const db = c.env.DB
     const [jobRows, machineRows, custRows, summaryRows] = await Promise.all([
-      db.prepare(`SELECT * FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC`).all(),
-      db.prepare(`SELECT * FROM machines WHERE deleted_at IS NULL ORDER BY created_at ASC`).all(),
-      db.prepare(`SELECT * FROM customer_profiles ORDER BY last_seen DESC`).all(),
+      db.prepare(`SELECT id,job_id,customer_name,customer_mobile,customer_address,notes,amount_received,created_at,updated_at FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC`).all(),
+      db.prepare(`SELECT id,job_id,description,condition_text,quantity,unit_price,status,assigned_to,work_done,return_reason,delivery_info,delivered_at,created_at,updated_at FROM machines WHERE deleted_at IS NULL ORDER BY created_at ASC`).all(),
+      db.prepare(`SELECT id,name,mobile,address,job_count,last_seen FROM customer_profiles ORDER BY last_seen DESC LIMIT 500`).all(),
       db.prepare(`SELECT * FROM job_summary`).all(),
     ])
     const summaryMap: Record<string, any> = {}
@@ -194,7 +219,7 @@ jobs.get('/barcode/:jobId', async (c) => {
   try {
     const db    = c.env.DB
     const jobId = c.req.param('jobId')
-    const job   = await db.prepare(`SELECT * FROM jobs WHERE job_id = ? AND deleted_at IS NULL`).bind(jobId).first()
+    const job   = await db.prepare(`SELECT job_id FROM jobs WHERE job_id = ? AND deleted_at IS NULL`).bind(jobId).first()
     if (!job) return c.json({ success: false, error: 'Job not found' }, 404)
     return c.json({ success: true, job_id: jobId })
   } catch (err: any) {
@@ -202,18 +227,17 @@ jobs.get('/barcode/:jobId', async (c) => {
   }
 })
 
-// ── GET /api/jobs/health ──────────────────────────────────────────────────────
+// ── GET /api/jobs/system-health ───────────────────────────────────────────────
 jobs.get('/system-health', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ success: false, error: 'Admin only' }, 403)
   try {
     const db = c.env.DB
-    const [totalJobs, totalMachines, deliveredJobs, deletedJobs, lastBackup, summaryRow] = await Promise.all([
+    const [totalJobs, totalMachines, deliveredJobs, deletedJobs, lastBackup] = await Promise.all([
       db.prepare(`SELECT COUNT(*) as cnt FROM jobs WHERE deleted_at IS NULL`).first() as any,
       db.prepare(`SELECT COUNT(*) as cnt FROM machines WHERE deleted_at IS NULL`).first() as any,
       db.prepare(`SELECT COUNT(*) as cnt FROM jobs WHERE deleted_at IS NULL AND job_id IN (SELECT DISTINCT job_id FROM job_summary WHERE delivered_count = total_machines AND total_machines > 0)`).first() as any,
       db.prepare(`SELECT COUNT(*) as cnt FROM jobs WHERE deleted_at IS NOT NULL`).first() as any,
       db.prepare(`SELECT backup_key, created_at FROM monthly_backups ORDER BY created_at DESC LIMIT 1`).first() as any,
-      db.prepare(`SELECT SUM(total_machines) as tm, SUM(repaired_count) as rc FROM job_summary`).first() as any,
     ])
     return c.json({
       success: true,
@@ -229,7 +253,7 @@ jobs.get('/system-health', async (c) => {
   }
 })
 
-// ── GET /api/jobs/ai-suggest/:machineDesc ─────────────────────────────────────
+// ── GET /api/jobs/ai-suggest ──────────────────────────────────────────────────
 jobs.get('/ai-suggest', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ success: false, error: 'Admin only' }, 403)
   try {
@@ -249,7 +273,6 @@ jobs.get('/ai-suggest', async (c) => {
     const items = rows.results as any[]
     if (!items.length) return c.json({ success: true, suggestions: [], message: 'No historical data found' })
 
-    // Aggregate most common repairs
     const workMap: Record<string, number> = {}
     items.forEach((m: any) => {
       if (m.work_done) {
@@ -259,7 +282,6 @@ jobs.get('/ai-suggest', async (c) => {
     })
     const sortedWork = Object.entries(workMap).sort((a, b) => b[1] - a[1]).slice(0, 5)
 
-    // Average repair time (updated_at - created_at in hours)
     const times = items
       .filter((m: any) => m.updated_at && m.created_at && m.status !== 'Under Repair')
       .map((m: any) => {
@@ -288,6 +310,136 @@ jobs.get('/ai-suggest', async (c) => {
   }
 })
 
+// ── GET /api/jobs/assignment-requests — admin: list all, staff: list own ──────
+jobs.get('/assignment-requests', async (c) => {
+  const db        = c.env.DB
+  const role      = c.get('role')
+  const staffName = c.get('staff_name')
+  try {
+    let rows: any
+    if (role === 'admin') {
+      rows = await db.prepare(
+        `SELECT ar.*, m.description as machine_desc, m.job_id
+         FROM assignment_requests ar
+         LEFT JOIN machines m ON m.id = ar.machine_id
+         WHERE ar.status = 'pending'
+         ORDER BY ar.created_at DESC LIMIT 50`
+      ).all()
+    } else {
+      rows = await db.prepare(
+        `SELECT ar.*, m.description as machine_desc, m.job_id
+         FROM assignment_requests ar
+         LEFT JOIN machines m ON m.id = ar.machine_id
+         WHERE ar.requested_by = ?
+         ORDER BY ar.created_at DESC LIMIT 20`
+      ).bind(staffName).all()
+    }
+    return c.json({ success: true, requests: rows.results })
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message }, 500)
+  }
+})
+
+// ── POST /api/jobs/assignment-requests — staff requests machine assignment ────
+jobs.post('/assignment-requests', async (c) => {
+  const db        = c.env.DB
+  const staffName = c.get('staff_name')
+  const role      = c.get('role')
+  if (!staffName || role !== 'staff') return c.json({ success: false, error: 'Staff only' }, 403)
+  try {
+    let body: any = {}
+    try { body = await c.req.json() } catch { return c.json({ success: false, error: 'Invalid JSON' }, 400) }
+    const machineId = safeNum(body.machine_id)
+    const jobId     = safeStr(body.job_id)
+    if (!machineId || !jobId) return c.json({ success: false, error: 'machine_id and job_id required' }, 400)
+
+    const machine: any = await db.prepare(`SELECT id, assigned_to FROM machines WHERE id=? AND deleted_at IS NULL`).bind(machineId).first()
+    if (!machine) return c.json({ success: false, error: 'Machine not found' }, 404)
+
+    // Check for existing pending request
+    const existing = await db.prepare(
+      `SELECT id FROM assignment_requests WHERE machine_id=? AND requested_by=? AND status='pending'`
+    ).bind(machineId, staffName).first()
+    if (existing) return c.json({ success: false, error: 'Request already pending' }, 409)
+
+    const result = await db.prepare(
+      `INSERT INTO assignment_requests (machine_id, job_id, requested_by, current_staff, status) VALUES (?,?,?,?,?)`
+    ).bind(machineId, jobId, staffName, machine.assigned_to || null, 'pending').run()
+
+    return c.json({ success: true, id: result.meta?.last_row_id, message: 'Assignment request submitted' }, 201)
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message }, 500)
+  }
+})
+
+// ── PUT /api/jobs/assignment-requests/:id — admin approve/deny ────────────────
+jobs.put('/assignment-requests/:id', async (c) => {
+  if (c.get('role') !== 'admin') return c.json({ success: false, error: 'Admin only' }, 403)
+  const db = c.env.DB
+  const id = c.req.param('id')
+  try {
+    let body: any = {}
+    try { body = await c.req.json() } catch { return c.json({ success: false, error: 'Invalid JSON' }, 400) }
+    const status    = body.status === 'approved' ? 'approved' : 'denied'
+    const adminNote = safeStr(body.admin_note) || null
+
+    const req: any = await db.prepare(`SELECT * FROM assignment_requests WHERE id=?`).bind(id).first()
+    if (!req) return c.json({ success: false, error: 'Request not found' }, 404)
+
+    await db.prepare(
+      `UPDATE assignment_requests SET status=?, admin_note=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?`
+    ).bind(status, adminNote, id).run()
+
+    if (status === 'approved') {
+      // Reassign the machine
+      await db.prepare(`UPDATE machines SET assigned_to=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(req.requested_by, req.machine_id).run()
+      await addTimeline(db, Number(req.machine_id), req.job_id, 'assigned', `Reassigned to ${req.requested_by}`, 'Admin')
+      await refreshJobSummary(db, req.job_id)
+    }
+
+    return c.json({ success: true, status, message: status === 'approved' ? `Machine reassigned to ${req.requested_by}` : 'Request denied' })
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message }, 500)
+  }
+})
+
+// ── GET /api/jobs/staff-export — staff export their machines ──────────────────
+jobs.get('/staff-export', async (c) => {
+  const db        = c.env.DB
+  const role      = c.get('role')
+  const staffName = c.get('staff_name')
+  if (!staffName) return c.json({ success: false, error: 'Unauthorized' }, 401)
+
+  const from  = safeStr(c.req.query('from'))
+  const to    = safeStr(c.req.query('to'))
+  const month = safeStr(c.req.query('month'))
+
+  try {
+    let sql = `SELECT m.id, m.job_id, m.description, m.condition_text, m.work_done, m.status,
+                      m.assigned_to, m.quantity, m.created_at, m.updated_at,
+                      j.customer_name
+               FROM machines m
+               LEFT JOIN jobs j ON j.job_id = m.job_id
+               WHERE m.assigned_to = ? AND m.deleted_at IS NULL AND j.deleted_at IS NULL`
+    const params: any[] = [staffName]
+
+    if (month) {
+      sql += ` AND strftime('%Y-%m', m.created_at) = ?`
+      params.push(month)
+    } else if (from && to) {
+      sql += ` AND date(m.created_at) BETWEEN ? AND ?`
+      params.push(from, to)
+    }
+    sql += ` ORDER BY m.created_at DESC LIMIT 500`
+
+    const rows = await db.prepare(sql).bind(...params).all()
+    // Never include customer_mobile or unit_price for staff export
+    return c.json({ success: true, machines: rows.results })
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message }, 500)
+  }
+})
+
 // ── GET /api/jobs/:jobId ──────────────────────────────────────────────────────
 jobs.get('/:jobId', async (c) => {
   try {
@@ -296,17 +448,41 @@ jobs.get('/:jobId', async (c) => {
     const staffName = c.get('staff_name')
     const jobId     = c.req.param('jobId')
 
-    const job = await db.prepare(`SELECT * FROM jobs WHERE job_id = ? AND deleted_at IS NULL`).bind(jobId).first()
+    const [job, mq, summary] = await Promise.all([
+      db.prepare(`SELECT id,job_id,customer_name,customer_mobile,customer_address,notes,amount_received,created_at,updated_at FROM jobs WHERE job_id = ? AND deleted_at IS NULL`).bind(jobId).first(),
+      role === 'admin'
+        ? db.prepare(`SELECT * FROM machines WHERE job_id = ? AND deleted_at IS NULL ORDER BY created_at ASC`).bind(jobId).all()
+        : db.prepare(`SELECT * FROM machines WHERE job_id = ? AND status != 'Delivered' AND deleted_at IS NULL ORDER BY created_at ASC`).bind(jobId).all(),
+      db.prepare(`SELECT * FROM job_summary WHERE job_id = ?`).bind(jobId).first()
+    ])
+
     if (!job) return c.json({ success: false, error: 'Not found' }, 404)
 
-    let mq: any
-    if (role === 'admin') {
-      mq = await db.prepare(`SELECT * FROM machines WHERE job_id = ? AND deleted_at IS NULL ORDER BY created_at ASC`).bind(jobId).all()
-    } else {
-      mq = await db.prepare(`SELECT * FROM machines WHERE job_id = ? AND status != 'Delivered' AND deleted_at IS NULL ORDER BY created_at ASC`).bind(jobId).all()
+    // Full machine data (including image_data) for single job view
+    const machines = (mq.results as any[]).map(m => sanitizeMachineFull(m, role, staffName))
+    const sm = machines.map(m => ({...m}))
+    const grandTotal = (mq.results as any[]).reduce((s, m) => s + safeNum(m.quantity,1)*safeNum(m.unit_price,0), 0)
+    const s: any = summary
+    const totalM = s ? s.total_machines : machines.length
+    const out: any = {
+      ...(job as any),
+      machines: sm,
+      machine_count: totalM,
+      repaired_count: s ? s.repaired_count : machines.filter(m=>m.status==='Repaired').length,
+      returned_count: s ? s.returned_count : machines.filter(m=>m.status==='Return').length,
+      pending_count: s ? s.pending_count : machines.filter(m=>m.status==='Under Repair').length,
+      delivered_count: s ? s.delivered_count : machines.filter(m=>m.status==='Delivered').length,
+      all_repaired: totalM > 0 && (s ? s.pending_count === 0 : machines.filter(m=>m.status==='Under Repair').length===0),
+      all_delivered: totalM > 0 && (s ? s.delivered_count === totalM : machines.filter(m=>m.status==='Delivered').length===totalM),
     }
-    const summary = await db.prepare(`SELECT * FROM job_summary WHERE job_id = ?`).bind(jobId).first()
-    return c.json(sanitizeJob(job, mq.results, role, staffName, summary))
+    if (role !== 'admin') {
+      delete out.customer_mobile; delete out.customer_address; delete out.amount_received
+      out.has_mine = (mq.results as any[]).some((m:any) => m.assigned_to === staffName)
+    } else {
+      out.grand_total = grandTotal
+      out.balance = grandTotal - safeNum((job as any).amount_received, 0)
+    }
+    return c.json(out)
   } catch (err: any) {
     return c.json({ success: false, error: err?.message || 'Failed' }, 500)
   }
@@ -322,7 +498,6 @@ jobs.post('/', async (c) => {
     try { body = await c.req.json() } catch {
       return c.json({ success: false, error: 'Invalid JSON body' }, 400)
     }
-    console.log('[POST /jobs] body:', JSON.stringify({ ...body }))
 
     const customerName    = safeStr(body.customer_name)
     const customerMobile  = safeStr(body.customer_mobile)  || null
@@ -331,16 +506,29 @@ jobs.post('/', async (c) => {
 
     if (!customerName) return c.json({ success: false, error: 'customer_name is required' }, 400)
 
-    // Gap-less job ID
-    const existing = await db.prepare(`SELECT job_id FROM jobs ORDER BY created_at ASC`).all()
-    const usedNums = new Set(
-      (existing.results as any[]).map((r: any) => {
-        const n = parseInt(String(r.job_id || '').replace('C-', ''), 10)
-        return isNaN(n) ? 0 : n
-      })
-    )
-    let next = 1; while (usedNums.has(next)) next++
-    const jobId = `C-${String(next).padStart(3, '0')}`
+    // Gap-less job ID using sequence table (fast)
+    let jobId: string
+    try {
+      await db.prepare(`UPDATE job_sequence SET current_val = current_val + 1 WHERE id = 1`).run()
+      const seq: any = await db.prepare(`SELECT current_val FROM job_sequence WHERE id = 1`).first()
+      const seqNum = seq?.current_val || 1
+      jobId = `C-${String(seqNum).padStart(3, '0')}`
+      // Check for collision (rare)
+      const collision = await db.prepare(`SELECT job_id FROM jobs WHERE job_id = ?`).bind(jobId).first()
+      if (collision) {
+        // Fallback to scan
+        const existing = await db.prepare(`SELECT job_id FROM jobs ORDER BY created_at ASC`).all()
+        const usedNums = new Set((existing.results as any[]).map((r:any) => parseInt(String(r.job_id||'').replace('C-',''),10)).filter(n => !isNaN(n)))
+        let next = 1; while (usedNums.has(next)) next++
+        jobId = `C-${String(next).padStart(3, '0')}`
+      }
+    } catch {
+      // Fallback
+      const existing = await db.prepare(`SELECT job_id FROM jobs ORDER BY created_at ASC`).all()
+      const usedNums = new Set((existing.results as any[]).map((r:any) => parseInt(String(r.job_id||'').replace('C-',''),10)).filter(n => !isNaN(n)))
+      let next = 1; while (usedNums.has(next)) next++
+      jobId = `C-${String(next).padStart(3, '0')}`
+    }
 
     await db.prepare(
       `INSERT INTO jobs (job_id, customer_name, customer_mobile, customer_address, notes) VALUES (?,?,?,?,?)`
@@ -353,7 +541,10 @@ jobs.post('/', async (c) => {
     ).bind(jobId).run()
 
     const newJob: any = await db.prepare(`SELECT * FROM jobs WHERE job_id = ?`).bind(jobId).first()
-    console.log('[POST /jobs] created:', jobId)
+
+    // Invalidate dashboard snapshot
+    await invalidateDashboardSnapshot(db)
+
     return c.json({ success: true, ...newJob }, 201)
   } catch (err: any) {
     console.error('[POST /jobs] error:', err?.message)
@@ -385,6 +576,7 @@ jobs.put('/:jobId', async (c) => {
       `UPDATE jobs SET customer_name=?,customer_mobile=?,customer_address=?,amount_received=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=?`
     ).bind(name, mobile, addr, amt, notesv, jobId).run()
 
+    await invalidateDashboardSnapshot(db)
     const updated: any = await db.prepare(`SELECT * FROM jobs WHERE job_id = ?`).bind(jobId).first()
     return c.json({ success: true, ...updated })
   } catch (err: any) {
@@ -400,20 +592,19 @@ jobs.delete('/:jobId', async (c) => {
     const jobId = c.req.param('jobId')
     const actor = c.get('user')
 
-    // Soft delete: set deleted_at
     const job: any = await db.prepare(`SELECT * FROM jobs WHERE job_id = ? AND deleted_at IS NULL`).bind(jobId).first()
     if (!job) return c.json({ success: false, error: 'Job not found' }, 404)
 
     await db.prepare(`UPDATE jobs SET deleted_at=CURRENT_TIMESTAMP WHERE job_id=?`).bind(jobId).run()
     await db.prepare(`UPDATE machines SET deleted_at=CURRENT_TIMESTAMP WHERE job_id=?`).bind(jobId).run()
 
-    // Save to trash
     const purgeAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString()
     const machines = await db.prepare(`SELECT * FROM machines WHERE job_id=?`).bind(jobId).all()
     await db.prepare(
       `INSERT INTO trash_items (item_type, item_id, item_data, deleted_by, purge_at) VALUES (?,?,?,?,?)`
     ).bind('job', jobId, JSON.stringify({ job, machines: machines.results }), actor, purgeAt).run()
 
+    await invalidateDashboardSnapshot(db)
     return c.json({ success: true, message: 'Job moved to trash (30-day recovery window)' })
   } catch (err: any) {
     return c.json({ success: false, error: err?.message || 'Failed' }, 500)
@@ -450,6 +641,24 @@ jobs.get('/:jobId/machines/:machineId/images', async (c) => {
   }
 })
 
+// ── GET /api/jobs/:jobId/machines/:machineId — get full machine with image ────
+jobs.get('/:jobId/machines/:machineId', async (c) => {
+  try {
+    const db        = c.env.DB
+    const role      = c.get('role')
+    const staffName = c.get('staff_name')
+    const machineId = c.req.param('machineId')
+    const machine: any = await db.prepare(`SELECT * FROM machines WHERE id=? AND deleted_at IS NULL`).bind(machineId).first()
+    if (!machine) return c.json({ success: false, error: 'Not found' }, 404)
+    if (role !== 'admin' && machine.assigned_to !== staffName) {
+      return c.json({ success: false, error: 'Not assigned to you' }, 403)
+    }
+    return c.json({ success: true, machine: sanitizeMachineFull(machine, role, staffName) })
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message }, 500)
+  }
+})
+
 // ── POST /api/jobs/:jobId/machines ────────────────────────────────────────────
 jobs.post('/:jobId/machines', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ success: false, error: 'Admin only' }, 403)
@@ -462,7 +671,6 @@ jobs.post('/:jobId/machines', async (c) => {
     try { body = await c.req.json() } catch {
       return c.json({ success: false, error: 'Invalid JSON body' }, 400)
     }
-    console.log('[POST /machines] jobId:', jobId, 'desc:', body.description)
 
     const description   = safeStr(body.description)
     const conditionText = safeStr(body.condition_text)    || null
@@ -490,12 +698,11 @@ jobs.post('/:jobId/machines', async (c) => {
     const lastId = result.meta?.last_row_id
     const newMachine = await db.prepare(`SELECT * FROM machines WHERE id = ?`).bind(lastId).first()
 
-    // Timeline
     await addTimeline(db, lastId, jobId, 'received', `Machine received: ${description}`, actor)
     if (assignedTo) await addTimeline(db, lastId, jobId, 'assigned', `Assigned to ${assignedTo}`, actor)
 
-    // Refresh job summary
     await refreshJobSummary(db, jobId)
+    await invalidateDashboardSnapshot(db)
 
     return c.json({ success: true, machine: newMachine, ...newMachine }, 201)
   } catch (err: any) {
@@ -601,7 +808,8 @@ jobs.put('/:jobId/machines/:machineId', async (c) => {
     ).bind(desc, cond, img, qty, price, newStatus, assignedTo, workDone, returnReason,
            deliveryInfo, deliveredAt, audioNote, machineId).run()
 
-    const updated: any = await db.prepare(`SELECT * FROM machines WHERE id = ?`).bind(machineId).first()
+    // Return minimal response (no image_data to keep it fast)
+    const updated: any = await db.prepare(`SELECT id,job_id,description,condition_text,quantity,unit_price,status,assigned_to,work_done,return_reason,delivery_info,delivered_at,audio_note,priority_flag,created_at,updated_at FROM machines WHERE id = ?`).bind(machineId).first()
 
     // Timeline events
     if (newStatus !== existing.status) {
@@ -622,6 +830,7 @@ jobs.put('/:jobId/machines/:machineId', async (c) => {
     }
 
     await refreshJobSummary(db, jobId)
+    await invalidateDashboardSnapshot(db)
 
     return c.json({ success: true, machine: updated, ...updated })
   } catch (err: any) {
@@ -650,6 +859,7 @@ jobs.delete('/:jobId/machines/:machineId', async (c) => {
     ).bind('machine', machineId, JSON.stringify(existing), actor, purgeAt).run()
 
     await refreshJobSummary(db, jobId)
+    await invalidateDashboardSnapshot(db)
     return c.json({ success: true, message: 'Machine moved to trash' })
   } catch (err: any) {
     return c.json({ success: false, error: err?.message || 'Failed' }, 500)
@@ -685,7 +895,6 @@ jobs.post('/:jobId/deliver', async (c) => {
 
     await db.prepare(`UPDATE jobs SET updated_at=CURRENT_TIMESTAMP WHERE job_id=?`).bind(jobId).run()
 
-    // Timeline for each delivered machine
     for (const m of machines.results as any[]) {
       if (m.status !== 'Delivered') {
         await addTimeline(db, m.id, jobId, 'delivered', `Delivered${diStr ? ' via ' + (body.delivery_info?.type || 'unknown') : ''}`, actor)
@@ -693,8 +902,9 @@ jobs.post('/:jobId/deliver', async (c) => {
     }
 
     await refreshJobSummary(db, jobId)
+    await invalidateDashboardSnapshot(db)
 
-    const updated = await db.prepare(`SELECT * FROM machines WHERE job_id=? ORDER BY created_at ASC`).bind(jobId).all()
+    const updated = await db.prepare(`SELECT id,job_id,description,condition_text,quantity,unit_price,status,assigned_to,work_done,return_reason,delivery_info,delivered_at,created_at FROM machines WHERE job_id=? ORDER BY created_at ASC`).bind(jobId).all()
     const job     = await db.prepare(`SELECT * FROM jobs WHERE job_id=?`).bind(jobId).first()
     const summary = await db.prepare(`SELECT * FROM job_summary WHERE job_id=?`).bind(jobId).first()
 
@@ -704,13 +914,13 @@ jobs.post('/:jobId/deliver', async (c) => {
   }
 })
 
-// ── GET /api/jobs/trash ───────────────────────────────────────────────────────
+// ── GET /api/jobs/trash/list ──────────────────────────────────────────────────
 jobs.get('/trash/list', async (c) => {
   if (c.get('role') !== 'admin') return c.json({ success: false, error: 'Admin only' }, 403)
   try {
     const db   = c.env.DB
     const rows = await db.prepare(
-      `SELECT * FROM trash_items ORDER BY deleted_at DESC LIMIT 100`
+      `SELECT id,item_type,item_id,deleted_by,deleted_at,purge_at FROM trash_items ORDER BY deleted_at DESC LIMIT 100`
     ).all()
     return c.json({ success: true, items: rows.results })
   } catch (err: any) {
@@ -741,6 +951,7 @@ jobs.post('/trash/restore', async (c) => {
     }
 
     await db.prepare(`DELETE FROM trash_items WHERE id=?`).bind(trash_id).run()
+    await invalidateDashboardSnapshot(db)
     return c.json({ success: true, message: `${item.item_type} restored` })
   } catch (err: any) {
     return c.json({ success: false, error: err?.message }, 500)
@@ -763,18 +974,17 @@ jobs.post('/bulk', async (c) => {
 
     let affected = 0
     if (action === 'archive') {
-      // Soft delete
       for (const jid of job_ids) {
         await db.prepare(`UPDATE jobs SET deleted_at=CURRENT_TIMESTAMP WHERE job_id=? AND deleted_at IS NULL`).bind(jid).run()
         await db.prepare(`UPDATE machines SET deleted_at=CURRENT_TIMESTAMP WHERE job_id=? AND deleted_at IS NULL`).bind(jid).run()
         affected++
       }
+      await invalidateDashboardSnapshot(db)
     } else if (action === 'export') {
       const ph  = job_ids.map(() => '?').join(',')
-      const jobs = await db.prepare(`SELECT id,job_id,customer_name,customer_mobile,customer_address,amount_received,notes,created_at,updated_at FROM jobs WHERE job_id IN (${ph})`).bind(...job_ids).all()
-      // Exclude image_data from bulk export to avoid payload size issues
+      const jbs = await db.prepare(`SELECT id,job_id,customer_name,customer_mobile,customer_address,amount_received,notes,created_at,updated_at FROM jobs WHERE job_id IN (${ph})`).bind(...job_ids).all()
       const macs = await db.prepare(`SELECT id,job_id,description,condition_text,quantity,unit_price,status,assigned_to,work_done,return_reason,delivery_info,delivered_at,created_at,updated_at FROM machines WHERE job_id IN (${ph}) AND deleted_at IS NULL`).bind(...job_ids).all()
-      return c.json({ success: true, jobs: jobs.results, machines: macs.results })
+      return c.json({ success: true, jobs: jbs.results, machines: macs.results })
     }
 
     return c.json({ success: true, affected })

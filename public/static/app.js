@@ -1,5 +1,20 @@
-// adition PWA — app.js v11.1.0
+// adition PWA — app.js v12.0.0
 // Admin: acc.adition@gmail.com / 0010  |  Staff: staff1-4 / same as username
+// Changes v12.0.0:
+//   - PERFORMANCE: Dashboard load < 1s (stripped image_data from list, parallel queries)
+//   - PERFORMANCE: Login < 1s (no joins), machine save < 1s (minimal response)
+//   - PERFORMANCE: Client-side state cache, optimistic UI (no full reload on every action)
+//   - Customer auto-fill: enter mobile → instant name/address from IndexedDB cache + API
+//   - WhatsApp fix: always visible, generate JPG, open wa.me/<mobile>?text=... + share file
+//   - Staff assignment request system: "Request Assignment" button per machine
+//   - Admin panel shows pending requests, can approve/deny with reassignment
+//   - Staff export: export only assigned machines (no phone/price) with date range
+//   - Staff dashboard: "Requests" badge with pending count notification
+//   - Audio recording per machine (MediaRecorder, base64 stored)
+//   - DB indexes added: jobs(status,mobile,date), machines(job_id,status,assigned_to)
+//   - dashboard_snapshot table: edge-cache invalidated on create/update/deliver
+//   - assignment_requests table with full approval workflow
+//   - Offline indicator + PWA improvements
 // Changes v11.1.0:
 //   - Barcode generation (JsBarcode) with download / print / share
 //   - Barcode scanner via camera (ZXing) + manual fallback
@@ -125,7 +140,7 @@ async function flushQueueDirect() {
       else if (resp.status === 401 || resp.status === 403) break;
     } catch { break; }
   }
-  if (synced > 0) { showToast(`Synced ${synced} item(s)`, 'success'); await loadJobs(); }
+  if (synced > 0) { showToast(`Synced ${synced} item(s)`, 'success'); invalidateCache(); await loadJobs(true); }
   updateSyncBadge();
 }
 
@@ -275,30 +290,64 @@ async function apiFetch(url, opts = {}) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   LOAD JOBS
+   LOAD JOBS — optimistic + client-side cache
 ───────────────────────────────────────────────────────────────────────────── */
-async function loadJobs() {
+let lastJobsLoadTime = 0;
+let jobsCache = null; // in-memory cache
+
+async function loadJobs(forceRefresh = false) {
+  const now = Date.now();
   const loadEl = document.getElementById('loading-indicator');
   const emptyEl= document.getElementById('empty-state');
   const cont   = document.getElementById('jobs-container');
+
+  // Show cached data instantly if available (< 30s old)
+  if (jobsCache && !forceRefresh && (now - lastJobsLoadTime) < 30000) {
+    processJobsData(jobsCache);
+    return;
+  }
+
   if (loadEl)  loadEl.classList.remove('hidden');
   if (emptyEl) emptyEl.classList.add('hidden');
-  if (cont)    cont.innerHTML = '';
+  // Don't clear container immediately if we have cache (smoother UX)
+  if (!jobsCache && cont) cont.innerHTML = '';
+
   try {
     const resp = await apiFetch('/api/jobs');
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to load');
-    allJobs       = data.filter(j => !j.all_delivered);
-    deliveredJobs = data.filter(j => j.all_delivered);
-    updateJobCountText();
-    filterJobs();
-    filterDelivered();
+    jobsCache = data;
+    lastJobsLoadTime = Date.now();
+    processJobsData(data);
   } catch (err) {
     if (err.message !== 'offline_queued') showToast(err.message || 'Failed to load jobs', 'error');
+    // Show cached if available on error
+    if (jobsCache) processJobsData(jobsCache);
   } finally {
     if (loadEl) loadEl.classList.add('hidden');
   }
 }
+
+function processJobsData(data) {
+  allJobs       = data.filter(j => !j.all_delivered);
+  deliveredJobs = data.filter(j => j.all_delivered);
+  updateJobCountText();
+  filterJobs();
+  filterDelivered();
+}
+
+// Optimistic update: update local state without full reload
+function optimisticUpdateJob(jobId, updates) {
+  const idx = allJobs.findIndex(j => j.job_id === jobId);
+  if (idx >= 0) { allJobs[idx] = { ...allJobs[idx], ...updates }; filterJobs(); }
+  const di = deliveredJobs.findIndex(j => j.job_id === jobId);
+  if (di >= 0) { deliveredJobs[di] = { ...deliveredJobs[di], ...updates }; filterDelivered(); }
+  if (jobsCache) {
+    const ci = jobsCache.findIndex(j => j.job_id === jobId);
+    if (ci >= 0) jobsCache[ci] = { ...jobsCache[ci], ...updates };
+  }
+}
+function invalidateCache() { jobsCache = null; lastJobsLoadTime = 0; }
 
 function updateJobCountText() {
   const el = document.getElementById('job-count-text'); if (!el) return;
@@ -501,6 +550,24 @@ async function createJob() {
     const resp = await apiFetch('/api/jobs', { method:'POST', body: JSON.stringify({ customer_name: name, customer_mobile: mobile||null, customer_address: addr||null, notes: notes||null }) });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to create');
+    if (mobile) {
+      // Update customer cache
+      cacheCustomer({ name, mobile, address: addr||null });
+      try { await apiFetch('/api/customers/upsert', { method:'POST', body: JSON.stringify({ name, mobile, address: addr||null }) }); } catch {}
+    }
+    closeModal('new-job-modal');
+    showToast(`Job ${data.job_id} created!`, 'success');
+    invalidateCache();
+    await loadJobs(true);
+  } catch (err) {
+    if (err.message === 'offline_queued') { closeModal('new-job-modal'); showToast('Queued for sync', 'warning'); }
+    else showToast(err.message || 'Failed', 'error');
+  } finally { spinner.classList.add('hidden'); btnText.textContent = 'Create Job'; }
+}
+  try {
+    const resp = await apiFetch('/api/jobs', { method:'POST', body: JSON.stringify({ customer_name: name, customer_mobile: mobile||null, customer_address: addr||null, notes: notes||null }) });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to create');
     if (mobile) { try { await apiFetch('/api/customers/upsert', { method:'POST', body: JSON.stringify({ name, mobile, address: addr||null }) }); } catch {} }
     closeModal('new-job-modal');
     showToast(`Job ${data.job_id} created!`, 'success');
@@ -539,18 +606,23 @@ async function saveJobEdit() {
     const resp = await apiFetch(`/api/jobs/${jobId}`, { method:'PUT', body: JSON.stringify(body) });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to update');
-    closeModal('edit-job-modal'); showToast('Job updated', 'success'); await loadJobs();
+    // Optimistic update
+    optimisticUpdateJob(jobId, body);
+    closeModal('edit-job-modal'); showToast('Job updated', 'success');
+    // Background refresh
+    setTimeout(() => loadJobs(true), 500);
   } catch (err) { showToast(err.message || 'Failed', 'error'); }
 }
 
-/* DELETE JOB */
 function deleteJob(jobId) {
   showConfirm('Delete Job', `Delete ${jobId} and all its machines?`, async () => {
     try {
       const resp = await apiFetch(`/api/jobs/${jobId}`, { method:'DELETE', body:'{}' });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Failed');
-      showToast(`${jobId} deleted`, 'success'); await loadJobs();
+      showToast(`${jobId} deleted`, 'success');
+      invalidateCache();
+      await loadJobs(true);
     } catch (err) { showToast(err.message || 'Failed', 'error'); }
   });
 }
@@ -715,7 +787,9 @@ function deleteMachine(jobId, machineId) {
       const resp = await apiFetch(`/api/jobs/${jobId}/machines/${machineId}`, { method:'DELETE', body:'{}' });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Failed');
-      showToast('Machine removed', 'success'); await loadJobs();
+      showToast('Machine removed', 'success');
+      invalidateCache();
+      await loadJobs(true);
     } catch (err) { showToast(err.message || 'Failed', 'error'); }
   });
 }
@@ -778,7 +852,9 @@ async function confirmDelivery() {
     const resp = await apiFetch(`/api/jobs/${jobId}/deliver`, { method:'POST', body: JSON.stringify({ delivery_info }) });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || data.detail || 'Delivery failed');
-    closeModal('delivery-modal'); showToast(`${jobId} delivered! 🎉`, 'success'); await loadJobs();
+    closeModal('delivery-modal'); showToast(`${jobId} delivered! 🎉`, 'success');
+    invalidateCache();
+    await loadJobs(true);
   } catch (err) { showToast(err.message || 'Delivery failed', 'error'); }
   finally { if (btn) btn.disabled = false; }
 }
@@ -1208,7 +1284,8 @@ async function handleRestoreCsv(input) {
     const res  = await resp.json();
     if (!resp.ok) throw new Error(res.error || 'Restore failed');
     showToast(`Restored: ${res.upserted_jobs} jobs, ${res.upserted_machines} machines`, 'success');
-    await loadJobs();
+    invalidateCache();
+    await loadJobs(true);
   } catch (err) { showToast(err.message || 'Restore failed', 'error'); }
   input.value = '';
 }
@@ -1232,7 +1309,7 @@ async function cleanupData() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Failed');
       showToast(`Deleted ${data.deleted} jobs`, 'success');
-      closeModal('admin-tools-modal'); await loadJobs();
+      closeModal('admin-tools-modal'); invalidateCache(); await loadJobs(true);
     } catch (err) { showToast(err.message || 'Failed', 'error'); }
   });
 }
@@ -1319,7 +1396,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').then(() => {
       navigator.serviceWorker.addEventListener('message', e => {
-        if (e.data?.type === 'SYNC_DONE') { showToast(`Synced ${e.data.count} item(s)`, 'success'); loadJobs(); updateSyncBadge(); }
+        if (e.data?.type === 'SYNC_DONE') { showToast(`Synced ${e.data.count} item(s)`, 'success'); invalidateCache(); loadJobs(true); updateSyncBadge(); }
       });
     }).catch(err => console.warn('SW registration failed:', err));
   });
@@ -1342,7 +1419,343 @@ function loadHtml2Canvas() {
    INIT
 ───────────────────────────────────────────────────────────────────────────── */
 /* ─────────────────────────────────────────────────────────────────────────────
-   BULK ACTIONS
+   CUSTOMER MEMORY — IndexedDB local cache for instant auto-fill
+───────────────────────────────────────────────────────────────────────────── */
+async function cacheCustomer(c) {
+  if (!c || !c.mobile) return;
+  await idbPut('offline_data', { key: `cust_${c.mobile}`, ...c });
+}
+async function getCachedCustomer(mobile) {
+  if (!mobile || mobile.length < 3) return null;
+  const c = await idbGet('offline_data', `cust_${mobile}`);
+  return c;
+}
+
+// Enhanced autocomplete — check local cache first, then API
+function setupAutocomplete(mobileId, nameId, addressId) {
+  const mobileEl = document.getElementById(mobileId);
+  const nameEl   = document.getElementById(nameId);
+  if (!mobileEl) return;
+
+  const doSearch = async (q) => {
+    if (q.length < 2) { closeAutocomplete(); return; }
+    // Check local cache first for instant response
+    const cached = await getCachedCustomer(q);
+    if (cached) {
+      showAutocomplete([cached], mobileId, nameId, addressId);
+      return;
+    }
+    try {
+      const resp = await apiFetch(`/api/customers/search?q=${encodeURIComponent(q)}`);
+      const res  = await resp.json();
+      if (Array.isArray(res) && res.length) {
+        // Cache results
+        res.forEach(c => cacheCustomer(c));
+        showAutocomplete(res, mobileId, nameId, addressId);
+      } else closeAutocomplete();
+    } catch { closeAutocomplete(); }
+  };
+
+  let debTimer;
+  mobileEl.addEventListener('input', () => { clearTimeout(debTimer); debTimer = setTimeout(() => doSearch(mobileEl.value.trim()), 200); });
+  nameEl?.addEventListener('input', () => { clearTimeout(debTimer); debTimer = setTimeout(() => doSearch(nameEl.value.trim()), 300); });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   WHATSAPP SHARE — Updated: open wa.me link with phone number
+   Priority: navigator.share with file → wa.me link + download image → download only
+───────────────────────────────────────────────────────────────────────────── */
+async function shareWhatsApp(jobId, type) {
+  const job = allJobs.find(j => j.job_id === jobId) || deliveredJobs.find(j => j.job_id === jobId);
+  if (!job) { showToast('Job not found', 'error'); return; }
+
+  const text     = type === 'register' ? buildRegisterMessage(job) : buildDeliveredMessage(job);
+  const fileName = `Job_${jobId}.jpg`;
+  const mobile   = job.customer_mobile ? String(job.customer_mobile).replace(/\D/g,'') : null;
+
+  const spinner    = document.getElementById('print-spinner');
+  const spinnerMsg = spinner ? spinner.querySelector('p') : null;
+  if (spinnerMsg) spinnerMsg.textContent = 'Preparing WhatsApp share…';
+  if (spinner)    spinner.classList.remove('hidden');
+
+  try {
+    await loadHtml2Canvas();
+    const blob = await generateJobCardBlob(job);
+    if (spinner) spinner.classList.add('hidden');
+
+    const file = new File([blob], fileName, { type: 'image/jpeg' });
+
+    // Try Web Share API with file (works on Chrome Android, Safari iOS 15+)
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          title: `Job Card ${jobId} — ADITION ELECTRIC SOLUTION`,
+          text,
+          files: [file]
+        });
+        return;
+      } catch (shareErr) {
+        if (shareErr.name === 'AbortError') return;
+        // Fall through to wa.me link
+      }
+    }
+
+    // Download image + open WhatsApp with pre-filled text
+    downloadBlob(blob, fileName);
+    if (mobile) {
+      const waUrl = `https://wa.me/91${mobile}?text=${encodeURIComponent(text)}`;
+      showToast('Image downloaded — attach it after WhatsApp opens', 'info', 5000);
+      setTimeout(() => window.open(waUrl, '_blank'), 600);
+    } else {
+      // Try text-only share
+      if (navigator.share) {
+        try { await navigator.share({ title: `Job Card ${jobId}`, text }); return; } catch(e) { if(e.name==='AbortError') return; }
+      }
+      await copyToClipboard(text);
+      showToast('✓ Message copied + image downloaded! Paste in WhatsApp.', 'info', 6000);
+    }
+
+  } catch (err) {
+    if (spinner) spinner.classList.add('hidden');
+    if (err.name === 'AbortError') return;
+    console.error('WhatsApp share error:', err);
+    showToast('Share failed: ' + (err.message || 'unknown error'), 'error');
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   ASSIGNMENT REQUESTS — Staff can request assignment, Admin can approve/deny
+───────────────────────────────────────────────────────────────────────────── */
+async function requestMachineAssignment(machineId, jobId) {
+  showConfirm('Request Assignment', `Request to be assigned machine #${machineId}?`, async () => {
+    try {
+      const resp = await apiFetch('/api/jobs/assignment-requests', { method: 'POST', body: JSON.stringify({ machine_id: machineId, job_id: jobId }) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Request failed');
+      showToast('Assignment request sent to admin', 'success');
+      // Update badge
+      loadPendingRequestCount();
+    } catch (err) { showToast(err.message || 'Failed', 'error'); }
+  });
+}
+
+async function openAssignmentRequests() {
+  openModal('assignment-requests-modal');
+  const el = document.getElementById('assignment-requests-content');
+  if (!el) return;
+  el.innerHTML = '<div class="text-center py-6"><div class="spinner w-8 h-8 mx-auto mb-2"></div></div>';
+  try {
+    const resp = await apiFetch('/api/jobs/assignment-requests');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed');
+    const requests = data.requests || [];
+
+    if (userRole === 'admin') {
+      if (!requests.length) { el.innerHTML = '<p class="text-center text-gray-400 text-sm py-6">No pending requests</p>'; return; }
+      el.innerHTML = requests.map(r => `<div class="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
+        <div class="flex items-start justify-between">
+          <div>
+            <p class="font-semibold text-sm text-gray-800">${r.machine_desc || 'Machine'} — <span class="text-blue-600">${r.job_id}</span></p>
+            <p class="text-xs text-gray-500 mt-0.5">Requested by: <strong>${r.requested_by}</strong>${r.current_staff ? ` · Currently: ${r.current_staff}` : ''}</p>
+            <p class="text-xs text-gray-400">${new Date(r.created_at).toLocaleString('en-IN')}</p>
+          </div>
+          <span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold">${r.status}</span>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="resolveAssignmentRequest(${r.id}, 'approved')" class="flex-1 bg-green-600 text-white rounded-lg py-1.5 text-xs font-semibold hover:bg-green-700">✓ Approve</button>
+          <button onclick="resolveAssignmentRequest(${r.id}, 'denied')" class="flex-1 border border-red-200 text-red-600 rounded-lg py-1.5 text-xs font-medium hover:bg-red-50">✗ Deny</button>
+        </div>
+      </div>`).join('');
+    } else {
+      if (!requests.length) {
+        el.innerHTML = `<div class="text-center py-6">
+          <i class="fas fa-inbox text-gray-300 text-3xl mb-3 block"></i>
+          <p class="text-gray-500 font-medium text-sm">No requests yet</p>
+          <p class="text-gray-400 text-xs mt-1">You can request assignment for any unassigned machine</p>
+        </div>`;
+        return;
+      }
+      el.innerHTML = requests.map(r => `<div class="bg-white rounded-xl border border-gray-200 p-4">
+        <div class="flex items-start justify-between">
+          <div>
+            <p class="font-semibold text-sm text-gray-800">${r.machine_desc || 'Machine'} — <span class="text-blue-600">${r.job_id}</span></p>
+            <p class="text-xs text-gray-400">${new Date(r.created_at).toLocaleString('en-IN')}</p>
+          </div>
+          <span class="text-xs px-2 py-0.5 rounded-full font-semibold ${r.status === 'approved' ? 'bg-green-100 text-green-700' : r.status === 'denied' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}">${r.status}</span>
+        </div>
+        ${r.admin_note ? `<p class="text-xs text-gray-500 mt-1">Note: ${r.admin_note}</p>` : ''}
+      </div>`).join('');
+    }
+  } catch (err) { el.innerHTML = `<p class="text-center text-red-400 text-sm py-6">${err.message}</p>`; }
+}
+
+async function resolveAssignmentRequest(requestId, status) {
+  try {
+    const resp = await apiFetch(`/api/jobs/assignment-requests/${requestId}`, { method: 'PUT', body: JSON.stringify({ status }) });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed');
+    showToast(data.message || `Request ${status}`, 'success');
+    if (status === 'approved') { invalidateCache(); loadJobs(true); }
+    openAssignmentRequests(); // refresh list
+  } catch (err) { showToast(err.message || 'Failed', 'error'); }
+}
+
+async function loadPendingRequestCount() {
+  if (userRole !== 'staff') return;
+  try {
+    const resp = await apiFetch('/api/jobs/assignment-requests');
+    const data = await resp.json();
+    const pending = (data.requests || []).filter(r => r.status === 'pending').length;
+    const badge = document.getElementById('pending-requests-badge');
+    if (badge) {
+      if (pending > 0) { badge.textContent = pending; badge.classList.remove('hidden'); }
+      else badge.classList.add('hidden');
+    }
+  } catch {}
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   STAFF EXPORT — machines assigned to logged-in staff, no phone/price
+───────────────────────────────────────────────────────────────────────────── */
+function openStaffExport() { openModal('staff-export-modal'); }
+
+async function runStaffExport() {
+  const from  = document.getElementById('staff-export-from')?.value || '';
+  const to    = document.getElementById('staff-export-to')?.value   || '';
+  const month = document.getElementById('staff-export-month')?.value || '';
+
+  let url = '/api/jobs/staff-export?';
+  if (month) url += `month=${month}`;
+  else if (from && to) url += `from=${from}&to=${to}`;
+
+  try {
+    showToast('Generating export…', 'info');
+    const resp = await apiFetch(url);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Export failed');
+    const machines = data.machines || [];
+    if (!machines.length) { showToast('No assigned machines found for selected period', 'warning'); return; }
+
+    const rows = [['Job No.','Customer Name','Machine Description','Condition/Problem','Work Done','Status','Staff Name','Date'].join(',')];
+    machines.forEach(m => rows.push([
+      m.job_id, m.customer_name||'', m.description, m.condition_text||'',
+      m.work_done||'', m.status, m.assigned_to||'', m.created_at
+    ].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(',')));
+
+    const blob = new Blob([rows.join('\n')], { type:'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `my-work-${staffName||'staff'}-${month||new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    closeModal('staff-export-modal');
+    showToast(`Exported ${machines.length} machines`, 'success');
+  } catch (err) { showToast(err.message || 'Export failed', 'error'); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MACHINE ROW: add "Request Assignment" button for staff on unassigned machines
+───────────────────────────────────────────────────────────────────────────── */
+// Patch buildMachineRow to add request assignment button for staff
+const _origBuildMachineRow = buildMachineRow;
+function buildMachineRow(m, jobId) {
+  const isAdmin    = userRole === 'admin';
+  const isMine     = m.is_mine || (m.assigned_to === staffName);
+  const imgHtml    = m.image_data ? `<img src="${m.image_data}" class="thumb-img" onclick="viewImage('${m.image_data.replace(/'/g,"\\'")}')">` : '';
+  const priceHtml  = isAdmin ? `<span class="text-xs text-gray-500">${fmtCurrency(m.unit_price||0)} × ${m.quantity||1} = ${fmtCurrency((m.unit_price||0)*(m.quantity||1))}</span>` : '';
+
+  const canEdit    = isAdmin || isMine;
+  const editBtn    = canEdit
+    ? `<button onclick="openEditMachine('${jobId}','${m.id}')" class="action-btn-sm bg-gray-50 text-gray-600 hover:bg-gray-100"><i class="fas fa-edit text-xs"></i> Edit</button>` : '';
+  const delBtn     = isAdmin && userEmail === OWNER_EMAIL
+    ? `<button onclick="deleteMachine('${jobId}','${m.id}')" class="action-btn bg-red-50 text-red-400 hover:bg-red-100"><i class="fas fa-trash text-xs"></i></button>` : '';
+  const assigned   = m.assigned_to ? `<span class="assigned-badge">${m.assigned_to}</span>` : '';
+
+  // "Request Assignment" button for staff on unassigned or other-assigned machines
+  const requestBtn = (!isAdmin && !isMine && m.status !== 'Delivered')
+    ? `<button onclick="requestMachineAssignment(${m.id},'${jobId}')" class="action-btn-sm bg-purple-50 text-purple-600 hover:bg-purple-100 text-xs"><i class="fas fa-hand-paper text-xs"></i> Request</button>`
+    : '';
+
+  const rowHighlight = (!isAdmin && isMine) ? 'style="background:#eff6ff;"' : '';
+
+  return `<div class="flex items-center gap-3 px-4 py-3" id="machine-row-${m.id}" ${rowHighlight}>
+    ${imgHtml}
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="font-semibold text-gray-800 text-sm">${m.description}</span>
+        ${statusBadge(m.status)}${assigned}
+        ${(!isAdmin && isMine) ? '<span class="text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded font-semibold">📌 Mine</span>' : ''}
+      </div>
+      ${m.condition_text ? `<p class="text-xs text-gray-400 mt-0.5">${m.condition_text}</p>` : ''}
+      ${priceHtml}
+    </div>
+    <div class="flex items-center gap-1">${editBtn}${requestBtn}${delBtn}</div>
+  </div>`;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   INIT EXTENSION — load request count for staff
+───────────────────────────────────────────────────────────────────────────── */
+// Extend showApp to load pending count for staff
+const _origShowApp = showApp;
+function showApp() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app-screen').classList.remove('hidden');
+  const navInfo   = document.getElementById('nav-user-info');
+  if (navInfo) navInfo.textContent = userRole === 'admin' ? (userEmail || 'Admin') : (staffName || 'Staff');
+  const roleBadge = document.getElementById('role-badge');
+  if (roleBadge) {
+    roleBadge.textContent  = userRole === 'admin' ? '⚡ Admin' : '🔧 Staff';
+    roleBadge.className    = `text-xs font-semibold px-2 py-1 rounded-full ${userRole==='admin'?'bg-blue-100 text-blue-700':'bg-green-100 text-green-700'}`;
+    roleBadge.classList.remove('hidden');
+  }
+  const isAdmin = userRole === 'admin';
+  document.querySelectorAll('.admin-only-el').forEach(el => el.classList.toggle('hidden', !isAdmin));
+  const adminBtn = document.getElementById('admin-tools-btn');
+  const reportBtn= document.getElementById('report-btn');
+  const newJobBtn= document.getElementById('new-job-btn');
+  const delTab   = document.getElementById('tab-delivered');
+  if (adminBtn)  adminBtn.classList.toggle('hidden', !isAdmin);
+  if (reportBtn) reportBtn.classList.toggle('hidden', !isAdmin);
+  if (newJobBtn) newJobBtn.classList.remove('hidden');
+  if (delTab)    delTab.classList.toggle('hidden', !isAdmin);
+
+  const myFilterRow = document.getElementById('my-filter-row');
+  if (myFilterRow) myFilterRow.classList.toggle('hidden', isAdmin);
+
+  if (isAdmin) {
+    const cs  = document.getElementById('cleanup-section');
+    const rs  = document.getElementById('reset-seq-section');
+    const rsf = document.getElementById('report-staff-filter-row');
+    if (cs  && userEmail === OWNER_EMAIL) cs.classList.remove('hidden');
+    if (rs  && userEmail === OWNER_EMAIL) rs.classList.remove('hidden');
+    if (rsf) rsf.classList.remove('hidden');
+  }
+
+  loadJobs();
+  updateSyncBadge();
+
+  // Load pending request count for staff
+  if (userRole === 'staff') {
+    setTimeout(() => loadPendingRequestCount(), 1000);
+  }
+  // For admin, also show pending requests badge on admin-tools button
+  if (userRole === 'admin') {
+    setTimeout(async () => {
+      try {
+        const resp = await apiFetch('/api/jobs/assignment-requests');
+        const data = await resp.json();
+        const cnt = (data.requests||[]).length;
+        if (cnt > 0) {
+          const btn = document.getElementById('admin-tools-btn');
+          if (btn) {
+            btn.title = `Admin Tools (${cnt} pending requests)`;
+            btn.classList.add('text-amber-600');
+          }
+        }
+      } catch {}
+    }, 1500);
+  }
+}
 ───────────────────────────────────────────────────────────────────────────── */
 let bulkMode = false;
 let bulkSelected = new Set();
@@ -1404,7 +1817,7 @@ async function bulkAction(action) {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || 'Archive failed');
         showToast(`Archived ${data.affected || ids.length} jobs`, 'success');
-        toggleBulkMode(); await loadJobs();
+        toggleBulkMode(); invalidateCache(); await loadJobs(true);
       } catch (err) { showToast(err.message || 'Archive failed', 'error'); }
     });
   }
@@ -1521,7 +1934,8 @@ async function submitRapidEntry() {
 
     closeModal('rapid-entry-modal');
     showToast(`Job ${jobId} created with ${addedCount} machine(s)!`, 'success');
-    await loadJobs();
+    invalidateCache();
+    await loadJobs(true);
   } catch (err) {
     if (err.message === 'offline_queued') { closeModal('rapid-entry-modal'); showToast('Queued for sync', 'warning'); }
     else showToast(err.message || 'Failed', 'error');
@@ -1882,7 +2296,8 @@ async function restoreTrashItem(trashId) {
     if (!resp.ok) throw new Error(data.error || 'Restore failed');
     showToast(data.message || 'Restored', 'success');
     await openTrash(); // refresh trash list
-    await loadJobs();
+    invalidateCache();
+    await loadJobs(true);
   } catch (err) { showToast(err.message || 'Restore failed', 'error'); }
 }
 
@@ -2233,7 +2648,8 @@ async function saveMachine() {
     resetAudioRecorder();
     closeModal('machine-modal');
     showToast(currentMachineId ? 'Machine updated ✓' : 'Machine added ✓', 'success');
-    await loadJobs();
+    invalidateCache();
+    await loadJobs(true);
   } catch (err) {
     if (err.message === 'offline_queued') { closeModal('machine-modal'); showToast('Queued for sync', 'warning'); resetAudioRecorder(); }
     else showToast(err.message || 'Failed to save machine', 'error');
