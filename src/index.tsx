@@ -125,10 +125,8 @@ app.get('/api/analytics', authMiddleware, async (c) => {
   const isAdmin = c.get('userRole') === 'admin'
   const userId  = c.get('userId')
 
-  // Base job filter for staff: only assigned jobs
-  const staffJoin = !isAdmin
-    ? `JOIN machines m_staff ON m_staff.job_id = j.id AND m_staff.assigned_staff_id = ${userId}`
-    : ''
+  // Staff see all jobs in analytics (no filter needed)
+  const staffJoin = ''
 
   const today = new Date().toISOString().split('T')[0]
   const monthStart = today.substring(0, 8) + '01'
@@ -173,10 +171,9 @@ app.get('/api/jobs', authMiddleware, async (c) => {
   const params: any[] = []
 
   if (status) { conds.push('j.status=?'); params.push(status) }
-  // Staff: hide delivered + only show jobs with assigned machines
+  // Staff: hide delivered jobs only (can see all non-delivered jobs)
   if (!isAdmin) {
     conds.push("j.status != 'delivered'")
-    conds.push(`EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})`)
   }
   if (staffId && isAdmin) {
     conds.push(`EXISTS (SELECT 1 FROM machines ms2 WHERE ms2.job_id=j.id AND ms2.assigned_staff_id=?)`)
@@ -218,7 +215,13 @@ app.post('/api/jobs', authMiddleware, async (c) => {
 
   await c.env.DB.prepare('UPDATE job_counter SET last_seq=last_seq+1 WHERE id=1').run()
   const counter = await c.env.DB.prepare('SELECT last_seq FROM job_counter WHERE id=1').first<any>()
-  const jobId = `C-${String(counter.last_seq).padStart(3, '0')}`
+
+  // Get dynamic prefix and digit count from settings
+  const prefixSetting = await c.env.DB.prepare("SELECT value FROM app_settings WHERE key='job_prefix'").first<any>()
+  const digitsSetting = await c.env.DB.prepare("SELECT value FROM app_settings WHERE key='job_seq_digits'").first<any>()
+  const prefix = prefixSetting?.value || 'C'
+  const digits = parseInt(digitsSetting?.value || '3')
+  const jobId = `${prefix}-${String(counter.last_seq).padStart(digits, '0')}`
 
   await c.env.DB.prepare(
     `INSERT INTO customers(name,mobile,mobile2,address) VALUES(?,?,?,?)
@@ -258,14 +261,6 @@ app.get('/api/jobs/:id', authMiddleware, async (c) => {
   // Staff can't fetch delivered job details
   if (!isAdmin && job.status === 'delivered')
     return c.json({ error: 'Forbidden' }, 403)
-
-  // Staff: ensure they have at least one assigned machine in this job
-  if (!isAdmin) {
-    const assigned = await c.env.DB.prepare(
-      'SELECT id FROM machines WHERE job_id=? AND assigned_staff_id=?'
-    ).bind(id, userId).first<any>()
-    if (!assigned) return c.json({ error: 'Forbidden' }, 403)
-  }
 
   const { results: machines } = await c.env.DB.prepare(`
     SELECT m.*,
@@ -839,6 +834,54 @@ app.get('/api/reports/jobs', authMiddleware, adminOnly, async (c) => {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="AES_job_summary.xlsx"`
+    }
+  })
+})
+
+// ── API: App Settings ─────────────────────────────────────────────────────────
+// Get all settings
+app.get('/api/settings', authMiddleware, adminOnly, async (c) => {
+  const { results } = await c.env.DB.prepare('SELECT key, value FROM app_settings').all<any>()
+  const obj: Record<string, string> = {}
+  for (const r of results) obj[r.key] = r.value
+  return c.json(obj)
+})
+
+// Update a setting
+app.put('/api/settings', authMiddleware, adminOnly, async (c) => {
+  let body: any
+  try { body = await c.req.json() } catch { return c.json({ error: 'Invalid JSON' }, 400) }
+  const allowed = ['job_prefix', 'job_seq_digits']
+  for (const k of allowed) {
+    if (k in body) {
+      await c.env.DB.prepare(
+        'INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value'
+      ).bind(k, String(body[k])).run()
+    }
+  }
+  return c.json({ ok: true })
+})
+
+// ── API: Customer Data Export ─────────────────────────────────────────────────
+app.get('/api/reports/customers', authMiddleware, adminOnly, async (c) => {
+  const { results } = await c.env.DB.prepare(`
+    SELECT c.name AS customer_name, c.mobile AS phone_number,
+           c.mobile2 AS alt_phone, c.address,
+           COUNT(DISTINCT j.id) AS total_jobs,
+           MIN(j.created_at) AS first_job, MAX(j.created_at) AS last_job
+    FROM customers c
+    LEFT JOIN jobs j ON j.customer_id = c.id
+    GROUP BY c.id, c.name, c.mobile
+    ORDER BY c.name
+  `).all<any>()
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(results), 'Customer Data')
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  const date = new Date().toISOString().slice(0, 10)
+  return new Response(buf, {
+    headers: {
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="AES_customers_${date}.xlsx"`
     }
   })
 })

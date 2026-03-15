@@ -29,6 +29,8 @@ const S = {
   requests: [],
   filter : new URLSearchParams(window.location.search).get('status') || 'under_repair',
   search : '',
+  fromDate: '',
+  toDate  : '',
   audioStream  : null,
   audioRecorder: null,
   audioChunks  : [],
@@ -110,6 +112,21 @@ function closeModal() {
   stopAudioRecorder();
 }
 window.closeModal = closeModal;
+// Expose global helpers used in inline onclick attributes
+window.setFilter  = setFilter;
+window.filterAll    = function() { setFilter('');             S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterActive = function() { setFilter('under_repair'); S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterDone   = function() { setFilter('delivered');    S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterToday  = function() {
+  const t = new Date().toISOString().split('T')[0];
+  setFilter(''); S.fromDate = t; S.toDate = t; loadJobs();
+};
+window.filterMonth  = function() {
+  const now = new Date();
+  const ms  = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
+  const me  = now.toISOString().split('T')[0];
+  setFilter(''); S.fromDate = ms; S.toDate = me; loadJobs();
+};
 
 function setFilter(s) {
   S.filter = s;
@@ -346,7 +363,7 @@ function headerHTML() {
 function bottomNavHTML() {
   const tabs = [
     { id:'dashboard', icon:'fa-list-ul',    label:'Jobs'    },
-    { id:'newjob',    icon:'fa-plus-circle', label:'New Job' },
+    ...(isAdmin() ? [{ id:'newjob', icon:'fa-plus-circle', label:'New Job' }] : []),
     ...(isAdmin() ? [{ id:'requests', icon:'fa-bell', label:'Requests' }] : []),
     ...(isAdmin() ? [{ id:'staff',    icon:'fa-users',     label:'Staff'   }] : []),
     { id:'reports',  icon:'fa-chart-bar', label:'Reports' },
@@ -368,7 +385,7 @@ function bottomNavHTML() {
 function viewHTML() {
   switch (S.view) {
     case 'dashboard': return dashboardHTML();
-    case 'newjob':    return newJobHTML();
+    case 'newjob':    return isAdmin() ? newJobHTML() : deniedHTML();
     case 'detail':    return `<div id="detail-root" class="view-pad"><div class="loader-wrap"><i class="fas fa-spinner fa-spin fa-2x"></i></div></div>`;
     case 'staff':     return isAdmin() ? staffHTML()    : deniedHTML();
     case 'reports':   return reportsHTML();
@@ -388,7 +405,7 @@ function bindView() {
 
   switch (S.view) {
     case 'dashboard': loadJobs();                                               break;
-    case 'newjob':    bindNewJob();                                             break;
+    case 'newjob':    if (isAdmin()) bindNewJob();                               break;
     case 'detail':    loadDetail();                                             break;
     case 'staff':     if (isAdmin()) loadStaff();                              break;
     case 'reports':   if (isAdmin()) { loadStaffForSelects(); } bindReports(); break;
@@ -436,19 +453,19 @@ async function loadJobs() {
     if (!sb) return;
     const d = r.data;
     sb.innerHTML = `
-      <div class="stat-chip" onclick="setFilter('');loadJobs()">
+      <div class="stat-chip" onclick="filterAll()">
         <span class="stat-num">${d.total}</span><span class="stat-lbl">Total</span>
       </div>
-      <div class="stat-chip" onclick="setFilter('under_repair');loadJobs()">
+      <div class="stat-chip" onclick="filterActive()">
         <span class="stat-num" style="color:#E53935">${d.pending}</span><span class="stat-lbl">Active</span>
       </div>
-      <div class="stat-chip" onclick="setFilter('delivered');loadJobs()">
+      <div class="stat-chip" onclick="filterDone()">
         <span class="stat-num" style="color:#43A047">${d.completed}</span><span class="stat-lbl">Done</span>
       </div>
-      <div class="stat-chip">
+      <div class="stat-chip" onclick="filterToday()">
         <span class="stat-num" style="color:#1E88E5">${d.today}</span><span class="stat-lbl">Today</span>
       </div>
-      <div class="stat-chip">
+      <div class="stat-chip" onclick="filterMonth()">
         <span class="stat-num" style="color:#FB8C00">${d.thisMonth}</span><span class="stat-lbl">Month</span>
       </div>`;
   }).catch(() => {
@@ -457,8 +474,10 @@ async function loadJobs() {
   });
   try {
     const params = {};
-    if (S.filter) params.status = S.filter;
-    if (S.search) params.q = S.search;
+    if (S.filter)   params.status = S.filter;
+    if (S.search)   params.q      = S.search;
+    if (S.fromDate) params.from   = S.fromDate;
+    if (S.toDate)   params.to     = S.toDate;
     const r = await API.get('/api/jobs', { params });
     S.jobs = r.data;
     renderVList();
@@ -484,7 +503,7 @@ function renderVList() {
   const wrap = document.getElementById('vlist-wrap');
   if (!wrap) return;
   if (!S.jobs.length) {
-    wrap.innerHTML = `<div class="empty-state"><i class="fas fa-inbox fa-3x"></i><p>No jobs found</p><p class="empty-sub">Tap <b>New Job</b> to create one</p></div>`;
+    wrap.innerHTML = `<div class="empty-state"><i class="fas fa-inbox fa-3x"></i><p>No jobs found</p>${isAdmin() ? '<p class="empty-sub">Tap <b>New Job</b> to create one</p>' : ''}</div>`;
     return;
   }
   const total = S.jobs.length;
@@ -1898,6 +1917,13 @@ function reportsHTML() {
   return `
   <div class="view-pad">
     <div class="report-card">
+      <div class="report-title"><i class="fas fa-users" style="color:#1E88E5"></i> Customer Data Export</div>
+      <div class="report-desc">Export all customers: name, phone, total jobs (deduplicated)</div>
+      <button id="btn-cust-export" class="btn-sm btn-blue" style="margin-top:10px">
+        <i class="fas fa-download"></i> Download .xlsx
+      </button>
+    </div>
+    <div class="report-card">
       <div class="report-title"><i class="fas fa-file-excel" style="color:#43A047"></i> Full Backup</div>
       <div class="report-desc">Export all jobs, machines, images and customers</div>
       <button id="btn-export" class="btn-sm btn-green" style="margin-top:10px">
@@ -1939,22 +1965,46 @@ function reportsHTML() {
 function bindReports() {
   // Staff: my jobs export
   if (!isAdmin()) {
-    document.getElementById('btn-mj')?.addEventListener('click', () => {
+    document.getElementById('btn-mj')?.addEventListener('click', async () => {
       const from = document.getElementById('mj-from')?.value;
       const to   = document.getElementById('mj-to')?.value;
       const p    = new URLSearchParams();
       if (from) p.set('from', from);
       if (to)   p.set('to', to);
-      const a = document.createElement('a');
-      a.href = '/api/reports/my-jobs?' + p;
-      a.download = 'AES_my_jobs.xlsx';
-      document.body.appendChild(a); a.click(); a.remove();
+      try {
+        toast('Preparing export…', 'info');
+        const r = await API.get('/api/reports/my-jobs?' + p, { responseType: 'blob' });
+        const url = URL.createObjectURL(r.data);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'AES_my_jobs.xlsx';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        toast('Export downloaded ✅', 'success');
+      } catch (_) { toast('Export failed', 'error'); }
     });
     return;
   }
-  document.getElementById('btn-export')?.addEventListener('click', () => {
-    const a = document.createElement('a'); a.href = '/api/backup/export';
-    a.download = 'AES_backup.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+  document.getElementById('btn-export')?.addEventListener('click', async () => {
+    try {
+      toast('Preparing backup…', 'info');
+      const r = await API.get('/api/backup/export', { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a'); a.href = url; a.download = 'AES_backup.xlsx';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      toast('Backup downloaded ✅', 'success');
+    } catch (_) { toast('Export failed', 'error'); }
+  });
+  document.getElementById('btn-cust-export')?.addEventListener('click', async () => {
+    try {
+      toast('Preparing customer data…', 'info');
+      const r = await API.get('/api/reports/customers', { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a'); a.href = url; a.download = 'AES_customers.xlsx';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      toast('Customer data downloaded ✅', 'success');
+    } catch (_) { toast('Export failed', 'error'); }
   });
   document.getElementById('import-file')?.addEventListener('change', async e => {
     const file = e.target.files[0]; if (!file) return;
@@ -1966,19 +2016,33 @@ function bindReports() {
       toast(`Restored: ${r.data.restored.jobs} jobs`, 'success');
     } catch (_) { toast('Import failed', 'error'); }
   });
-  document.getElementById('btn-sr')?.addEventListener('click', () => {
+  document.getElementById('btn-sr')?.addEventListener('click', async () => {
     const from = document.getElementById('sr-from')?.value;
     const to   = document.getElementById('sr-to')?.value;
     const p    = new URLSearchParams(); if (from) p.set('from',from); if (to) p.set('to',to);
-    const a    = document.createElement('a'); a.href = '/api/reports/staff?' + p;
-    a.download = 'AES_staff_report.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+    try {
+      toast('Preparing staff report…', 'info');
+      const r = await API.get('/api/reports/staff?' + p, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a'); a.href = url; a.download = 'AES_staff_report.xlsx';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      toast('Staff report downloaded ✅', 'success');
+    } catch (_) { toast('Export failed', 'error'); }
   });
-  document.getElementById('btn-jr')?.addEventListener('click', () => {
+  document.getElementById('btn-jr')?.addEventListener('click', async () => {
     const from = document.getElementById('jr-from')?.value;
     const to   = document.getElementById('jr-to')?.value;
     const p    = new URLSearchParams(); if (from) p.set('from',from); if (to) p.set('to',to);
-    const a    = document.createElement('a'); a.href = '/api/reports/jobs?' + p;
-    a.download = 'AES_job_summary.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+    try {
+      toast('Preparing job summary…', 'info');
+      const r = await API.get('/api/reports/jobs?' + p, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a'); a.href = url; a.download = 'AES_job_summary.xlsx';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      toast('Job summary downloaded ✅', 'success');
+    } catch (_) { toast('Export failed', 'error'); }
   });
 }
 
@@ -1994,6 +2058,22 @@ function settingsHTML() {
       <div style="font-size:13px;color:#888;margin-top:2px">${esc(S.user?.email||'')} · ${S.user?.role||''}</div>
     </div>
     ${isAdmin() ? `
+    <div class="card" style="margin-bottom:12px" id="job-prefix-card">
+      <div class="section-title"><i class="fas fa-hashtag" style="color:#1E88E5"></i> Job Number Format</div>
+      <div style="font-size:13px;color:#888;margin-bottom:10px">Configure job ID prefix and digit count (e.g. AD-0001)</div>
+      <div class="form-row-2">
+        <div class="form-group">
+          <label class="form-label">Prefix</label>
+          <input id="set-prefix" type="text" class="form-input" placeholder="e.g. C, AD, AEW" maxlength="10">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Digits</label>
+          <input id="set-digits" type="number" class="form-input" placeholder="3" min="2" max="6">
+        </div>
+      </div>
+      <div style="font-size:12px;color:#888;margin:4px 0 8px">Preview: <b id="prefix-preview">—</b></div>
+      <button id="btn-save-prefix" class="btn-sm btn-blue"><i class="fas fa-save"></i> Save Format</button>
+    </div>
     <div class="settings-item" id="set-cleanup">
       <div>
         <div class="settings-label"><i class="fas fa-broom settings-icon" style="color:#FB8C00"></i> Cleanup Old Records</div>
@@ -2016,7 +2096,7 @@ function settingsHTML() {
       <i class="fas fa-chevron-right" style="color:#ccc"></i>
     </div>
     <div style="text-align:center;margin-top:24px;color:#bbb;font-size:13px">
-      ✨ adition™ since 1984 · v9.0<br>
+      ✨ adition™ since 1984 · v10.0<br>
       Gheekanta, Ahmedabad 380001
     </div>
   </div>`;
@@ -2030,6 +2110,40 @@ function bindSettings() {
       .then(() => { toast('Full reset complete', 'success'); navigate('dashboard'); })
       .catch(() => toast('Reset failed', 'error'));
   });
+
+  // Load and bind prefix settings (admin only)
+  if (isAdmin()) {
+    API.get('/api/settings').then(r => {
+      const d = r.data;
+      const pfx = document.getElementById('set-prefix');
+      const dig = document.getElementById('set-digits');
+      const prev = document.getElementById('prefix-preview');
+      if (pfx) pfx.value = d.job_prefix || 'C';
+      if (dig) dig.value = d.job_seq_digits || '3';
+      if (prev) {
+        const seq = String(1).padStart(parseInt(d.job_seq_digits || '3'), '0');
+        prev.textContent = `${d.job_prefix || 'C'}-${seq}`;
+      }
+      function updatePreview() {
+        const p = pfx?.value.trim() || 'C';
+        const n = parseInt(dig?.value || '3') || 3;
+        if (prev) prev.textContent = `${p}-${String(1).padStart(n, '0')}`;
+      }
+      pfx?.addEventListener('input', updatePreview);
+      dig?.addEventListener('input', updatePreview);
+    }).catch(() => {});
+
+    document.getElementById('btn-save-prefix')?.addEventListener('click', async () => {
+      const prefix = document.getElementById('set-prefix')?.value.trim().toUpperCase();
+      const digits = parseInt(document.getElementById('set-digits')?.value || '3');
+      if (!prefix) { toast('Prefix cannot be empty', 'error'); return; }
+      if (digits < 2 || digits > 6) { toast('Digits must be 2–6', 'error'); return; }
+      try {
+        await API.put('/api/settings', { job_prefix: prefix, job_seq_digits: String(digits) });
+        toast(`Format saved: ${prefix}-${String(1).padStart(digits, '0')} ✅`, 'success');
+      } catch (_) { toast('Failed to save', 'error'); }
+    });
+  }
 }
 function showCleanupModal() {
   showModal(`
