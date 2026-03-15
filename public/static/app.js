@@ -109,12 +109,40 @@ function closeModal() {
   unlockScroll();
   stopAudioRecorder();
 }
+window.closeModal = closeModal;
 
 function setFilter(s) {
   S.filter = s;
   const u = new URL(window.location);
   s ? u.searchParams.set('status', s) : u.searchParams.delete('status');
   history.replaceState({}, '', u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTHENTICATED IMAGE / AUDIO LOADER
+// R2 endpoints require Bearer token; we fetch as blob then set src
+// ─────────────────────────────────────────────────────────────────────────────
+const _mediaCache = new Map();
+async function loadAuthMedia(url, el, attr) {
+  if (!url || !S.token) return;
+  if (_mediaCache.has(url)) { el[attr] = _mediaCache.get(url); return; }
+  try {
+    const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + S.token } });
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    _mediaCache.set(url, blobUrl);
+    el[attr] = blobUrl;
+  } catch (_) {}
+}
+
+function applyAuthImages(container) {
+  (container || document).querySelectorAll('img[data-auth-src]').forEach(img => {
+    if (!img.src || img.src === window.location.href) loadAuthMedia(img.dataset.authSrc, img, 'src');
+  });
+  (container || document).querySelectorAll('audio[data-audio-src]').forEach(aud => {
+    if (!aud.src || aud.src === window.location.href) loadAuthMedia(aud.dataset.audioSrc, aud, 'src');
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -321,7 +349,7 @@ function bottomNavHTML() {
     { id:'newjob',    icon:'fa-plus-circle', label:'New Job' },
     ...(isAdmin() ? [{ id:'requests', icon:'fa-bell', label:'Requests' }] : []),
     ...(isAdmin() ? [{ id:'staff',    icon:'fa-users',     label:'Staff'   }] : []),
-    ...(isAdmin() ? [{ id:'reports',  icon:'fa-chart-bar', label:'Reports' }] : []),
+    { id:'reports',  icon:'fa-chart-bar', label:'Reports' },
     { id:'settings',  icon:'fa-cog',         label:'More'    },
   ];
   return `
@@ -343,7 +371,7 @@ function viewHTML() {
     case 'newjob':    return newJobHTML();
     case 'detail':    return `<div id="detail-root" class="view-pad"><div class="loader-wrap"><i class="fas fa-spinner fa-spin fa-2x"></i></div></div>`;
     case 'staff':     return isAdmin() ? staffHTML()    : deniedHTML();
-    case 'reports':   return isAdmin() ? reportsHTML()  : deniedHTML();
+    case 'reports':   return reportsHTML();
     case 'requests':  return isAdmin() ? requestsHTML() : deniedHTML();
     case 'settings':  return settingsHTML();
     default:          return dashboardHTML();
@@ -363,7 +391,7 @@ function bindView() {
     case 'newjob':    bindNewJob();                                             break;
     case 'detail':    loadDetail();                                             break;
     case 'staff':     if (isAdmin()) loadStaff();                              break;
-    case 'reports':   if (isAdmin()) { loadStaffForSelects(); bindReports(); } break;
+    case 'reports':   if (isAdmin()) { loadStaffForSelects(); } bindReports(); break;
     case 'requests':  if (isAdmin()) loadRequests();                           break;
     case 'settings':  bindSettings();                                           break;
   }
@@ -382,6 +410,7 @@ function dashboardHTML() {
   ];
   return `
   <div style="display:flex;flex-direction:column;height:100%">
+    <div id="stats-bar" class="stats-bar"></div>
     <div class="filter-bar">
       ${filters.map(f => `
       <button class="filter-chip ${S.filter===f.s?'chip-active':''}"
@@ -401,6 +430,31 @@ function dashboardHTML() {
 async function loadJobs() {
   const wrap = document.getElementById('vlist-wrap');
   if (wrap) wrap.innerHTML = `<div class="loader-wrap"><i class="fas fa-spinner fa-spin fa-2x"></i></div>`;
+  // Load analytics stats in background (non-blocking)
+  API.get('/api/analytics').then(r => {
+    const sb = document.getElementById('stats-bar');
+    if (!sb) return;
+    const d = r.data;
+    sb.innerHTML = `
+      <div class="stat-chip" onclick="setFilter('');loadJobs()">
+        <span class="stat-num">${d.total}</span><span class="stat-lbl">Total</span>
+      </div>
+      <div class="stat-chip" onclick="setFilter('under_repair');loadJobs()">
+        <span class="stat-num" style="color:#E53935">${d.pending}</span><span class="stat-lbl">Active</span>
+      </div>
+      <div class="stat-chip" onclick="setFilter('delivered');loadJobs()">
+        <span class="stat-num" style="color:#43A047">${d.completed}</span><span class="stat-lbl">Done</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-num" style="color:#1E88E5">${d.today}</span><span class="stat-lbl">Today</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-num" style="color:#FB8C00">${d.thisMonth}</span><span class="stat-lbl">Month</span>
+      </div>`;
+  }).catch(() => {
+    const sb = document.getElementById('stats-bar');
+    if (sb) sb.style.display = 'none';
+  });
   try {
     const params = {};
     if (S.filter) params.status = S.filter;
@@ -455,7 +509,8 @@ function renderVList() {
   }
 
   paint();
-  wrap.addEventListener('scroll', paint, { passive: true });
+  wrap.addEventListener('scroll', () => { paint(); requestAnimationFrame(() => applyAuthImages(wrap)); }, { passive: true });
+  setTimeout(() => applyAuthImages(wrap), 50);
 }
 
 function jobRowHTML(j) {
@@ -466,7 +521,7 @@ function jobRowHTML(j) {
   <div class="job-row" data-id="${j.id}" style="border-left-color:${color};will-change:transform,opacity">
     <div class="job-row-thumb">
       ${j.thumb
-        ? `<img src="${j.thumb}" class="thumb-img" loading="lazy" onerror="this.parentElement.innerHTML='<i class=\\'fas fa-tools\\' style=\\'color:#bbb;font-size:22px\\'></i>'">`
+        ? `<img data-auth-src="${j.thumb}" class="thumb-img" loading="lazy" alt="thumb">`
         : `<i class="fas fa-tools" style="color:#bbb;font-size:22px"></i>`}
     </div>
     <div class="job-row-body">
@@ -479,7 +534,7 @@ function jobRowHTML(j) {
         <span class="job-meta"><i class="fas fa-tools"></i> ${j.machine_count || 0}</span>
         ${isAdmin()
           ? `<span class="job-balance" style="color:${balance>0?'#E53935':'#43A047'}">Bal: ${fmtRs(balance)}</span>`
-          : `<span class="job-balance" style="color:${balance>0?'#E53935':'#43A047'}">Due: ${fmtRs(balance)}</span>`}
+          : `<span class="job-meta" style="color:#888">${fmtDate(j.created_at)}</span>`}
       </div>
     </div>
   </div>`;
@@ -843,7 +898,27 @@ function renderDetail() {
     </div>`;
 
   bindDetail(j);
+  // Load authenticated images and audio after DOM is set
+  requestAnimationFrame(() => applyAuthImages(document.getElementById('detail-root')));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMAGE VIEWER (click-to-enlarge lightbox)
+// ─────────────────────────────────────────────────────────────────────────────
+function openImageViewer(url) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:2000;display:flex;align-items:center;justify-content:center;';
+  const img = document.createElement('img');
+  img.style.cssText = 'max-width:95vw;max-height:90vh;object-fit:contain;border-radius:8px;';
+  img.alt = 'Image';
+  ov.appendChild(img);
+  // close on tap
+  ov.addEventListener('click', () => ov.remove());
+  document.body.appendChild(ov);
+  loadAuthMedia(url, img, 'src');
+}
+// Expose for inline onclick handlers in modal HTML strings
+window.openImageViewer = openImageViewer;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MACHINE CARD
@@ -854,6 +929,10 @@ function machineCardHTML(m, currentUserId) {
   const color = sc(m.status);
   const isAssigned = isAdmin() || (m.assigned_staff_id === currentUserId);
   const staffNotAssigned = !isAdmin() && m.assigned_staff_id !== currentUserId;
+  // Normalize audio URL: old records stored /api/images/audio/..., new ones /api/audio/...
+  const audioUrl = m.audio_note_url
+    ? m.audio_note_url.replace('/api/images/audio/', '/api/audio/')
+    : null;
 
   return `
   <div class="machine-card" style="border-left-color:${color};will-change:transform,opacity">
@@ -878,10 +957,9 @@ function machineCardHTML(m, currentUserId) {
     <!-- Images row with embedded camera upload -->
     <div class="images-row">
       ${(m.images||[]).map(img => `
-      <div class="img-wrap">
-        <img src="${img.url}" class="img-thumb" loading="lazy"
-             onerror="this.parentElement.style.display='none'">
-        ${isAdmin() ? `<button class="img-del-btn" data-iid="${img.id}" title="Remove">×</button>` : ''}
+      <div class="img-wrap" onclick="openImageViewer('${img.url}')" style="cursor:pointer">
+        <img data-auth-src="${img.url}" class="img-thumb" loading="lazy" alt="">
+        ${isAdmin() ? `<button class="img-del-btn" data-iid="${img.id}" title="Remove" onclick="event.stopPropagation()">×</button>` : ''}
       </div>`).join('')}
       <!-- Camera button — part of machine details, available to all -->
       <label class="img-add-btn" title="Take / pick photo">
@@ -893,10 +971,11 @@ function machineCardHTML(m, currentUserId) {
 
     <!-- Audio Note Section (admin & staff — not public) -->
     <div class="audio-row">
-      ${m.audio_note_url ? `
-      <audio controls src="${m.audio_note_url}" class="audio-player" preload="none"></audio>
-      ${isAdmin() ? `<button data-mid="${m.id}" class="btn-sm btn-red btn-del-audio" style="margin-left:6px" title="Delete audio"><i class="fas fa-trash"></i></button>` : ''}
-      ` : `
+      ${audioUrl ? `
+      <div style="flex:1;display:flex;align-items:center;gap:6px;min-width:0">
+        <audio controls data-audio-src="${audioUrl}" class="audio-player" preload="none" style="flex:1;min-width:0"></audio>
+        ${isAdmin() ? `<button data-mid="${m.id}" class="btn-sm btn-red btn-del-audio" title="Delete"><i class="fas fa-trash"></i></button>` : ''}
+      </div>` : `
       <button data-mid="${m.id}" class="btn-sm btn-orange btn-rec-audio">
         <i class="fas fa-microphone"></i> Voice Note
       </button>`}
@@ -1794,9 +1873,28 @@ async function loadStaffForSelects() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// REPORTS (admin only)
+// REPORTS (admin: full reports; staff: my jobs export)
 // ─────────────────────────────────────────────────────────────────────────────
 function reportsHTML() {
+  if (!isAdmin()) {
+    // Staff: only export their own jobs
+    return `
+    <div class="view-pad">
+      <div class="report-card">
+        <div class="report-title"><i class="fas fa-file-excel" style="color:#43A047"></i> My Jobs Export</div>
+        <div class="report-desc">Export your assigned jobs to Excel (.xlsx)</div>
+        <div class="form-row-2" style="margin-top:10px">
+          <div class="form-group"><label class="form-label">From</label>
+            <input id="mj-from" type="date" class="form-input"></div>
+          <div class="form-group"><label class="form-label">To</label>
+            <input id="mj-to" type="date" class="form-input"></div>
+        </div>
+        <button id="btn-mj" class="btn-sm btn-green" style="margin-top:6px">
+          <i class="fas fa-download"></i> Download .xlsx
+        </button>
+      </div>
+    </div>`;
+  }
   return `
   <div class="view-pad">
     <div class="report-card">
@@ -1839,6 +1937,21 @@ function reportsHTML() {
   </div>`;
 }
 function bindReports() {
+  // Staff: my jobs export
+  if (!isAdmin()) {
+    document.getElementById('btn-mj')?.addEventListener('click', () => {
+      const from = document.getElementById('mj-from')?.value;
+      const to   = document.getElementById('mj-to')?.value;
+      const p    = new URLSearchParams();
+      if (from) p.set('from', from);
+      if (to)   p.set('to', to);
+      const a = document.createElement('a');
+      a.href = '/api/reports/my-jobs?' + p;
+      a.download = 'AES_my_jobs.xlsx';
+      document.body.appendChild(a); a.click(); a.remove();
+    });
+    return;
+  }
   document.getElementById('btn-export')?.addEventListener('click', () => {
     const a = document.createElement('a'); a.href = '/api/backup/export';
     a.download = 'AES_backup.xlsx'; document.body.appendChild(a); a.click(); a.remove();

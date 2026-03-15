@@ -835,3 +835,45 @@ button, a, label, select, input[type="file"] + label, [role="button"] {
 
 /* ── Utility ───────────────────────────────────────────────────────────────── */
 .d-none { display: none !important; }
+
+/* ── Analytics stats bar ────────────────────────────────────────────────────── */
+.stats-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+  touch-action: pan-x;
+  min-height: 56px;
+}
+.stat-chip {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 6px 14px;
+  min-width: 58px;
+  cursor: pointer;
+  border: 1.5px solid #ececec;
+  transition: background 0.13s;
+}
+.stat-chip:active { background: #ede7e7; }
+.stat-num {
+  font-size: 18px;
+  font-weight: 900;
+  color: #1a1a2e;
+  line-height: 1.1;
+}
+.stat-lbl {
+  font-size: 10px;
+  color: #999;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 2px;
+}

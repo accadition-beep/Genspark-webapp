@@ -77,8 +77,8 @@ async function updateJobStatus(db: D1Database, jobId: string) {
   if (!machines.length) return
   const job = await db.prepare('SELECT status FROM jobs WHERE id=?').bind(jobId).first<any>()
   if (job?.status === 'delivered') return
-  const allReturned   = machines.every((m: any) => m.status === 'returned')
-  const anyUnderRepair= machines.some((m: any)  => m.status === 'under_repair')
+  const allReturned    = machines.every((m: any) => m.status === 'returned')
+  const anyUnderRepair = machines.some((m: any)  => m.status === 'under_repair')
   let newStatus = anyUnderRepair ? 'under_repair' : allReturned ? 'returned' : 'repaired'
   await db.prepare(`UPDATE jobs SET status=?,updated_at=datetime('now') WHERE id=?`)
     .bind(newStatus, jobId).run()
@@ -120,21 +120,74 @@ app.get('/api/customers/by-mobile', authMiddleware, async (c) => {
   return c.json(cust || null)
 })
 
+// ── API: Dashboard Analytics ──────────────────────────────────────────────────
+app.get('/api/analytics', authMiddleware, async (c) => {
+  const isAdmin = c.get('userRole') === 'admin'
+  const userId  = c.get('userId')
+
+  // Base job filter for staff: only assigned jobs
+  const staffJoin = !isAdmin
+    ? `JOIN machines m_staff ON m_staff.job_id = j.id AND m_staff.assigned_staff_id = ${userId}`
+    : ''
+
+  const today = new Date().toISOString().split('T')[0]
+  const monthStart = today.substring(0, 8) + '01'
+
+  const [total, pending, completed, todayCount, monthCount, byStatus, byStaff] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin}`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE j.status IN ('under_repair','repaired','returned')`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE j.status='delivered'`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE DATE(j.created_at)=?`).bind(today).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE j.created_at>=?`).bind(monthStart).first<any>(),
+    isAdmin ? c.env.DB.prepare(`
+      SELECT j.status, COUNT(j.id) AS cnt FROM jobs j GROUP BY j.status ORDER BY cnt DESC
+    `).all<any>() : { results: [] },
+    isAdmin ? c.env.DB.prepare(`
+      SELECT u.name, COUNT(m.id) AS cnt, SUM(m.charges) AS total_charges
+      FROM machines m JOIN users u ON m.assigned_staff_id=u.id
+      GROUP BY u.id, u.name ORDER BY cnt DESC LIMIT 10
+    `).all<any>() : { results: [] },
+  ])
+
+  return c.json({
+    total: total?.cnt || 0,
+    pending: pending?.cnt || 0,
+    completed: completed?.cnt || 0,
+    today: todayCount?.cnt || 0,
+    thisMonth: monthCount?.cnt || 0,
+    byStatus: isAdmin ? byStatus.results : [],
+    byStaff: isAdmin ? byStaff.results : [],
+  })
+})
+
 // ── API: Jobs — list ──────────────────────────────────────────────────────────
 app.get('/api/jobs', authMiddleware, async (c) => {
-  const status  = c.req.query('status') || ''
-  const search  = c.req.query('q')      || ''
-  const isAdmin = c.get('userRole') === 'admin'
+  const status   = c.req.query('status') || ''
+  const search   = c.req.query('q')      || ''
+  const staffId  = c.req.query('staff_id') || ''
+  const from     = c.req.query('from')   || ''
+  const to       = c.req.query('to')     || ''
+  const isAdmin  = c.get('userRole') === 'admin'
+  const userId   = c.get('userId')
   const conds: string[] = []
   const params: any[] = []
 
   if (status) { conds.push('j.status=?'); params.push(status) }
-  // Staff cannot list delivered jobs (server-enforced RBAC)
-  if (!isAdmin) { conds.push("j.status != 'delivered'") }
+  // Staff: hide delivered + only show jobs with assigned machines
+  if (!isAdmin) {
+    conds.push("j.status != 'delivered'")
+    conds.push(`EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})`)
+  }
+  if (staffId && isAdmin) {
+    conds.push(`EXISTS (SELECT 1 FROM machines ms2 WHERE ms2.job_id=j.id AND ms2.assigned_staff_id=?)`)
+    params.push(staffId)
+  }
   if (search) {
     conds.push('(j.snap_name LIKE ? OR j.snap_mobile LIKE ? OR j.id LIKE ?)')
     params.push(`%${search}%`, `%${search}%`, `%${search}%`)
   }
+  if (from) { conds.push('DATE(j.created_at)>=?'); params.push(from) }
+  if (to)   { conds.push('DATE(j.created_at)<=?'); params.push(to) }
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
   const { results } = await c.env.DB.prepare(`
@@ -199,9 +252,20 @@ app.get('/api/jobs/:id', authMiddleware, async (c) => {
   const job = await c.env.DB.prepare('SELECT * FROM jobs WHERE id=?').bind(id).first<any>()
   if (!job) return c.json({ error: 'Not found' }, 404)
 
+  const isAdmin = c.get('userRole') === 'admin'
+  const userId  = c.get('userId')
+
   // Staff can't fetch delivered job details
-  if (c.get('userRole') !== 'admin' && job.status === 'delivered')
+  if (!isAdmin && job.status === 'delivered')
     return c.json({ error: 'Forbidden' }, 403)
+
+  // Staff: ensure they have at least one assigned machine in this job
+  if (!isAdmin) {
+    const assigned = await c.env.DB.prepare(
+      'SELECT id FROM machines WHERE job_id=? AND assigned_staff_id=?'
+    ).bind(id, userId).first<any>()
+    if (!assigned) return c.json({ error: 'Forbidden' }, 403)
+  }
 
   const { results: machines } = await c.env.DB.prepare(`
     SELECT m.*,
@@ -235,15 +299,17 @@ app.put('/api/jobs/:id', authMiddleware, async (c) => {
   let body: any
   try { body = await c.req.json() } catch { return c.json({ error: 'Invalid JSON' }, 400) }
   const isAdmin = c.get('userRole') === 'admin'
+  if (!isAdmin) return c.json({ error: 'Forbidden' }, 403)
+
   const fields: string[] = []
   const vals: any[] = []
   const allowed = [
     'note', 'status',
     'delivery_method', 'delivery_receiver_name', 'delivery_receiver_mobile',
     'delivery_courier_name', 'delivery_tracking', 'delivery_address',
-    'snap_name', 'snap_mobile', 'snap_mobile2', 'snap_address'
+    'snap_name', 'snap_mobile', 'snap_mobile2', 'snap_address',
+    'received_amount'
   ]
-  if (isAdmin) allowed.push('received_amount')
   for (const k of allowed) {
     if (k in body) { fields.push(`${k}=?`); vals.push(body[k]) }
   }
@@ -265,13 +331,13 @@ app.delete('/api/jobs/:id', authMiddleware, adminOnly, async (c) => {
   for (const img of imgs) {
     if (img.r2_object_key) try { await c.env.PRODUCT_IMAGES.delete(img.r2_object_key) } catch (_) {}
   }
-  // Delete audio notes from R2
   const { results: audioMachines } = await c.env.DB.prepare(
     'SELECT audio_note_key FROM machines WHERE job_id=? AND audio_note_key IS NOT NULL'
   ).bind(id).all<any>()
   for (const m of audioMachines) {
     try { await c.env.PRODUCT_IMAGES.delete(m.audio_note_key) } catch (_) {}
   }
+  await c.env.DB.prepare('DELETE FROM assignment_requests WHERE job_id=?').bind(id).run()
   await c.env.DB.prepare('DELETE FROM machines WHERE job_id=?').bind(id).run()
   await c.env.DB.prepare('DELETE FROM jobs WHERE id=?').bind(id).run()
   return c.json({ ok: true })
@@ -321,7 +387,6 @@ app.put('/api/machines/:id', authMiddleware, async (c) => {
     return c.json({ error: 'Nothing to update' }, 400)
   }
 
-  // Admin: full update
   const fields: string[] = []
   const vals: any[] = []
   const allowed = ['product_name','product_complaint','quantity','assigned_staff_id','status','charges']
@@ -348,16 +413,26 @@ app.delete('/api/machines/:id', authMiddleware, adminOnly, async (c) => {
     if (img.r2_object_key) try { await c.env.PRODUCT_IMAGES.delete(img.r2_object_key) } catch (_) {}
   }
   if (machine.audio_note_key) try { await c.env.PRODUCT_IMAGES.delete(machine.audio_note_key) } catch (_) {}
+  await c.env.DB.prepare('DELETE FROM assignment_requests WHERE machine_id=?').bind(id).run()
   await c.env.DB.prepare('DELETE FROM machines WHERE id=?').bind(id).run()
   if (machine) await updateJobStatus(c.env.DB, machine.job_id)
   return c.json({ ok: true })
 })
 
 // ── API: Images ───────────────────────────────────────────────────────────────
+// Upload image — any authenticated user
 app.post('/api/machines/:id/images', authMiddleware, async (c) => {
   const machineId = c.req.param('id')
-  const formData  = await c.req.formData()
-  const file      = formData.get('image') as File | null
+  const machine   = await c.env.DB.prepare('SELECT * FROM machines WHERE id=?').bind(machineId).first<any>()
+  if (!machine) return c.json({ error: 'Machine not found' }, 404)
+
+  // Staff can only upload to their assigned machines
+  const isAdmin = c.get('userRole') === 'admin'
+  if (!isAdmin && machine.assigned_staff_id !== c.get('userId'))
+    return c.json({ error: 'Not assigned to this machine' }, 403)
+
+  const formData = await c.req.formData()
+  const file     = formData.get('image') as File | null
   if (!file) return c.json({ error: 'No image field' }, 400)
   const safeFilename = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
   const key = `machines/${machineId}/${Date.now()}-${safeFilename}`
@@ -371,6 +446,7 @@ app.post('/api/machines/:id/images', authMiddleware, async (c) => {
   return c.json({ url, key }, 201)
 })
 
+// Serve image from R2 — authenticated, CORS headers for html2canvas
 app.get('/api/images/*', authMiddleware, async (c) => {
   const key = c.req.path.slice('/api/images/'.length)
   const obj = await c.env.PRODUCT_IMAGES.get(key)
@@ -379,10 +455,13 @@ app.get('/api/images/*', authMiddleware, async (c) => {
     headers: {
       'Content-Type': obj.httpMetadata?.contentType || 'image/jpeg',
       'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
     }
   })
 })
 
+// Delete image — admin only
 app.delete('/api/images/:imageId', authMiddleware, adminOnly, async (c) => {
   const imageId = c.req.param('imageId')
   const img     = await c.env.DB.prepare('SELECT * FROM machine_images WHERE id=?').bind(imageId).first<any>()
@@ -393,22 +472,53 @@ app.delete('/api/images/:imageId', authMiddleware, adminOnly, async (c) => {
 })
 
 // ── API: Audio Notes ──────────────────────────────────────────────────────────
+// Upload audio — admin & staff
 app.post('/api/machines/:id/audio', authMiddleware, async (c) => {
   const machineId = c.req.param('id')
-  const formData  = await c.req.formData()
-  const file      = formData.get('audio') as File | null
+  const machine   = await c.env.DB.prepare('SELECT * FROM machines WHERE id=?').bind(machineId).first<any>()
+  if (!machine) return c.json({ error: 'Machine not found' }, 404)
+
+  const isAdmin = c.get('userRole') === 'admin'
+  if (!isAdmin && machine.assigned_staff_id !== c.get('userId'))
+    return c.json({ error: 'Not assigned to this machine' }, 403)
+
+  const formData = await c.req.formData()
+  const file     = formData.get('audio') as File | null
   if (!file) return c.json({ error: 'No audio field' }, 400)
-  const key = `audio/${machineId}/${Date.now()}.webm`
+
+  // Delete old audio if exists
+  if (machine.audio_note_key) {
+    try { await c.env.PRODUCT_IMAGES.delete(machine.audio_note_key) } catch (_) {}
+  }
+
+  const ext = file.type.includes('ogg') ? '.ogg' : file.type.includes('mp4') ? '.m4a' : '.webm'
+  const key = `audio/${machineId}/${Date.now()}${ext}`
   await c.env.PRODUCT_IMAGES.put(key, await file.arrayBuffer(), {
     httpMetadata: { contentType: file.type || 'audio/webm' }
   })
-  const url = `/api/images/${key}`
+  const url = `/api/audio/${key}`
   await c.env.DB.prepare(
     `UPDATE machines SET audio_note_key=?,audio_note_url=?,updated_at=datetime('now') WHERE id=?`
   ).bind(key, url, machineId).run()
   return c.json({ url, key }, 201)
 })
 
+// Serve audio from R2
+app.get('/api/audio/*', authMiddleware, async (c) => {
+  const key = c.req.path.slice('/api/audio/'.length)
+  const obj = await c.env.PRODUCT_IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': obj.httpMetadata?.contentType || 'audio/webm',
+      'Cache-Control': 'public, max-age=86400',
+      'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
+    }
+  })
+})
+
+// Delete audio — admin only
 app.delete('/api/machines/:id/audio', authMiddleware, adminOnly, async (c) => {
   const machineId = c.req.param('id')
   const machine   = await c.env.DB.prepare('SELECT * FROM machines WHERE id=?').bind(machineId).first<any>()
@@ -422,7 +532,6 @@ app.delete('/api/machines/:id/audio', authMiddleware, adminOnly, async (c) => {
 })
 
 // ── API: Assignment Requests ──────────────────────────────────────────────────
-// Staff requests assignment to a machine
 app.post('/api/requests', authMiddleware, async (c) => {
   if (c.get('userRole') === 'admin') return c.json({ error: 'Admins do not need to request' }, 400)
   let body: any
@@ -430,11 +539,9 @@ app.post('/api/requests', authMiddleware, async (c) => {
   const { machine_id, note } = body
   if (!machine_id) return c.json({ error: 'machine_id required' }, 400)
 
-  // Check machine exists
   const machine = await c.env.DB.prepare('SELECT * FROM machines WHERE id=?').bind(machine_id).first<any>()
   if (!machine) return c.json({ error: 'Machine not found' }, 404)
 
-  // Check no pending request already
   const existing = await c.env.DB.prepare(
     `SELECT id FROM assignment_requests WHERE machine_id=? AND staff_id=? AND status='pending'`
   ).bind(machine_id, c.get('userId')).first<any>()
@@ -447,7 +554,6 @@ app.post('/api/requests', authMiddleware, async (c) => {
   return c.json({ id: result.meta.last_row_id, status: 'pending' }, 201)
 })
 
-// Admin: list all pending requests (for dashboard notification)
 app.get('/api/requests', authMiddleware, adminOnly, async (c) => {
   const status = c.req.query('status') || 'pending'
   const { results } = await c.env.DB.prepare(`
@@ -463,12 +569,19 @@ app.get('/api/requests', authMiddleware, adminOnly, async (c) => {
   return c.json(results)
 })
 
-// Admin: approve or deny a request
+// Admin: count pending requests (for badge)
+app.get('/api/requests/count', authMiddleware, adminOnly, async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS cnt FROM assignment_requests WHERE status='pending'`
+  ).first<any>()
+  return c.json({ count: row?.cnt || 0 })
+})
+
 app.put('/api/requests/:id', authMiddleware, adminOnly, async (c) => {
   const id = c.req.param('id')
   let body: any
   try { body = await c.req.json() } catch { return c.json({ error: 'Invalid JSON' }, 400) }
-  const { action } = body // 'approve' | 'deny'
+  const { action } = body
   if (!['approve','deny'].includes(action)) return c.json({ error: 'action must be approve or deny' }, 400)
 
   const req = await c.env.DB.prepare('SELECT * FROM assignment_requests WHERE id=?').bind(id).first<any>()
@@ -480,12 +593,10 @@ app.put('/api/requests/:id', authMiddleware, adminOnly, async (c) => {
     `UPDATE assignment_requests SET status=?,resolved_at=datetime('now') WHERE id=?`
   ).bind(newStatus, id).run()
 
-  // If approved: assign staff to machine
   if (action === 'approve') {
     await c.env.DB.prepare(
       `UPDATE machines SET assigned_staff_id=?,updated_at=datetime('now') WHERE id=?`
     ).bind(req.staff_id, req.machine_id).run()
-    // Deny all other pending requests for same machine
     await c.env.DB.prepare(
       `UPDATE assignment_requests SET status='denied',resolved_at=datetime('now')
        WHERE machine_id=? AND status='pending' AND id!=?`
@@ -495,7 +606,6 @@ app.put('/api/requests/:id', authMiddleware, adminOnly, async (c) => {
   return c.json({ ok: true, status: newStatus })
 })
 
-// Staff: get their own assignment requests (to see approval status)
 app.get('/api/my-requests', authMiddleware, async (c) => {
   const { results } = await c.env.DB.prepare(`
     SELECT r.*, m.product_name, m.job_id
@@ -522,10 +632,15 @@ app.post('/api/staff', authMiddleware, adminOnly, async (c) => {
   const { name, email, password, role, active } = body
   if (!name || !email || !password) return c.json({ error: 'name, email, password required' }, 400)
   const hash = await bcrypt.hash(password, 10)
-  await c.env.DB.prepare(
-    'INSERT INTO users(name,email,password_hash,role,active) VALUES(?,?,?,?,?)'
-  ).bind(name, email, hash, role || 'staff', active !== undefined ? active : 1).run()
-  return c.json({ ok: true }, 201)
+  try {
+    await c.env.DB.prepare(
+      'INSERT INTO users(name,email,password_hash,role,active) VALUES(?,?,?,?,?)'
+    ).bind(name, email, hash, role || 'staff', active !== undefined ? active : 1).run()
+    return c.json({ ok: true }, 201)
+  } catch (e: any) {
+    if (e.message?.includes('UNIQUE')) return c.json({ error: 'Email already exists' }, 409)
+    return c.json({ error: 'Failed to create staff' }, 500)
+  }
 })
 
 app.put('/api/staff/:id', authMiddleware, adminOnly, async (c) => {
@@ -534,17 +649,25 @@ app.put('/api/staff/:id', authMiddleware, adminOnly, async (c) => {
   try { body = await c.req.json() } catch { return c.json({ error: 'Invalid JSON' }, 400) }
   const fields: string[] = []
   const vals: any[] = []
-  if (body.name)    { fields.push('name=?');  vals.push(body.name) }
-  if (body.email)   { fields.push('email=?'); vals.push(body.email) }
+  if (body.name)     { fields.push('name=?');  vals.push(body.name) }
+  if (body.email)    { fields.push('email=?'); vals.push(body.email) }
   if (body.password) {
     const hash = await bcrypt.hash(body.password, 10)
     fields.push('password_hash=?'); vals.push(hash)
   }
-  if (body.role)              { fields.push('role=?');   vals.push(body.role) }
+  if (body.role)               { fields.push('role=?');   vals.push(body.role) }
   if (body.active !== undefined) { fields.push('active=?'); vals.push(body.active) }
   if (!fields.length) return c.json({ error: 'Nothing to update' }, 400)
   vals.push(id)
   await c.env.DB.prepare(`UPDATE users SET ${fields.join(',')} WHERE id=?`).bind(...vals).run()
+  return c.json({ ok: true })
+})
+
+app.delete('/api/staff/:id', authMiddleware, adminOnly, async (c) => {
+  const id = c.req.param('id')
+  // Prevent deleting self
+  if (parseInt(id) === c.get('userId')) return c.json({ error: 'Cannot delete yourself' }, 400)
+  await c.env.DB.prepare('UPDATE users SET active=0 WHERE id=?').bind(id).run()
   return c.json({ ok: true })
 })
 
@@ -630,20 +753,23 @@ app.post('/api/backup/import', authMiddleware, adminOnly, async (c) => {
 })
 
 // ── API: Reports ──────────────────────────────────────────────────────────────
+// Admin staff report
 app.get('/api/reports/staff', authMiddleware, adminOnly, async (c) => {
   const from    = c.req.query('from')     || ''
   const to      = c.req.query('to')       || ''
   const staffId = c.req.query('staff_id') || ''
   let q = `
-    SELECT u.name AS staff_name, m.product_name, m.status, m.charges, m.quantity,
-           j.id AS job_id, j.snap_name AS customer_name, m.created_at
+    SELECT u.name AS staff_name, m.product_name, m.product_complaint AS problem_description,
+           m.status AS job_status, m.charges, m.quantity,
+           j.id AS job_id, j.snap_name AS customer_name, j.snap_mobile AS phone,
+           m.created_at AS created_date
     FROM machines m
     JOIN jobs j ON m.job_id=j.id
     LEFT JOIN users u ON m.assigned_staff_id=u.id
     WHERE 1=1`
   const ps: any[] = []
-  if (from)    { q += ' AND m.created_at>=?';       ps.push(from) }
-  if (to)      { q += ' AND m.created_at<=?';       ps.push(to + ' 23:59:59') }
+  if (from)    { q += ' AND DATE(m.created_at)>=?'; ps.push(from) }
+  if (to)      { q += ' AND DATE(m.created_at)<=?'; ps.push(to) }
   if (staffId) { q += ' AND m.assigned_staff_id=?'; ps.push(staffId) }
   q += ' ORDER BY u.name, m.created_at DESC'
   const { results } = await c.env.DB.prepare(q).bind(...ps).all<any>()
@@ -654,6 +780,37 @@ app.get('/api/reports/staff', authMiddleware, adminOnly, async (c) => {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="AES_staff_report.xlsx"`
+    }
+  })
+})
+
+// Staff: export their own jobs
+app.get('/api/reports/my-jobs', authMiddleware, async (c) => {
+  const from   = c.req.query('from') || ''
+  const to     = c.req.query('to')   || ''
+  const userId = c.get('userId')
+  let q = `
+    SELECT j.id AS job_id, j.snap_name AS customer_name, j.snap_mobile AS phone,
+           m.product_name AS machine_type, m.product_complaint AS problem_description,
+           m.status AS job_status, u.name AS assigned_staff,
+           m.charges, DATE(j.created_at) AS created_date
+    FROM machines m
+    JOIN jobs j ON m.job_id=j.id
+    LEFT JOIN users u ON m.assigned_staff_id=u.id
+    WHERE m.assigned_staff_id=?`
+  const ps: any[] = [userId]
+  if (from) { q += ' AND DATE(j.created_at)>=?'; ps.push(from) }
+  if (to)   { q += ' AND DATE(j.created_at)<=?'; ps.push(to) }
+  q += ' ORDER BY j.created_at DESC'
+  const { results } = await c.env.DB.prepare(q).bind(...ps).all<any>()
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(results), 'My Jobs')
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  const date = new Date().toISOString().slice(0, 10)
+  return new Response(buf, {
+    headers: {
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="AES_my_jobs_${date}.xlsx"`
     }
   })
 })
@@ -671,8 +828,8 @@ app.get('/api/reports/jobs', authMiddleware, adminOnly, async (c) => {
     FROM jobs j LEFT JOIN machines m ON j.id=m.job_id
     WHERE 1=1`
   const ps: any[] = []
-  if (from) { q += ' AND j.created_at>=?'; ps.push(from) }
-  if (to)   { q += ' AND j.created_at<=?'; ps.push(to + ' 23:59:59') }
+  if (from) { q += ' AND DATE(j.created_at)>=?'; ps.push(from) }
+  if (to)   { q += ' AND DATE(j.created_at)<=?'; ps.push(to) }
   q += ' GROUP BY j.id ORDER BY j.created_at DESC'
   const { results } = await c.env.DB.prepare(q).bind(...ps).all<any>()
   const wb = XLSX.utils.book_new()
@@ -704,8 +861,8 @@ app.delete('/api/cleanup', authMiddleware, adminOnly, async (c) => {
 
   if (from && to) {
     const { results: jobIds } = await c.env.DB.prepare(
-      `SELECT id FROM jobs WHERE created_at>=? AND created_at<=? AND status!='delivered'`
-    ).bind(from, to + ' 23:59:59').all<any>()
+      `SELECT id FROM jobs WHERE DATE(created_at)>=? AND DATE(created_at)<=? AND status!='delivered'`
+    ).bind(from, to).all<any>()
 
     let deleted = 0
     for (const { id } of jobIds) {
@@ -716,6 +873,7 @@ app.delete('/api/cleanup', authMiddleware, adminOnly, async (c) => {
       for (const img of imgs) {
         if (img.r2_object_key) try { await c.env.PRODUCT_IMAGES.delete(img.r2_object_key) } catch (_) {}
       }
+      await c.env.DB.prepare('DELETE FROM assignment_requests WHERE job_id=?').bind(id).run()
       await c.env.DB.prepare('DELETE FROM machines WHERE job_id=?').bind(id).run()
       await c.env.DB.prepare('DELETE FROM jobs WHERE id=?').bind(id).run()
       deleted++
