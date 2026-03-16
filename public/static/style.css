@@ -287,6 +287,15 @@ html, body {
   flex-shrink: 0;
   overflow: hidden;
 }
+.thumb-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 22px;
+  opacity: 0.6;
+}
 .thumb-img { width: 100%; height: 100%; object-fit: cover; border-radius: 12px; }
 .job-row-body { flex: 1; min-width: 0; }
 .job-row-top {
@@ -298,6 +307,7 @@ html, body {
 }
 .job-id    { font-size: 13px; font-weight: 800; color: #1a1a2e; }
 .job-name  { font-size: 15px; font-weight: 600; color: #1a1a2e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-machine-lbl { font-size: 12px; color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
 .job-row-foot {
   display: flex;
   align-items: center;
@@ -449,7 +459,10 @@ html, body {
   margin-bottom: 10px;
   will-change: transform, opacity;
   transition: box-shadow 0.15s;
+  border: 1px solid #f0f0f0;
+  border-left: 5px solid #E53935;
 }
+.machine-card:last-child { margin-bottom: 0; }
 .machine-top {
   display: flex;
   align-items: flex-start;
@@ -462,8 +475,10 @@ html, body {
   margin-bottom: 3px;
 }
 .machine-qty     { font-size: 13px; color: #888; font-weight: 600; }
-.machine-complaint { font-size: 13px; color: #666; margin-bottom: 3px; }
-.machine-staff   { font-size: 12px; color: #1E88E5; margin-top: 3px; }
+.machine-brand   { font-size: 12px; color: #aaa; margin-bottom: 3px; }
+.machine-complaint { font-size: 13px; color: #555; margin-bottom: 3px; line-height: 1.4; }
+.machine-staff   { font-size: 12px; color: #1E88E5; margin-top: 3px; display: flex; align-items: center; }
+.machine-staff.unassigned { color: #aaa; }
 .machine-right   { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
 .machine-charges { font-size: 16px; font-weight: 800; color: #E53935; }
 
@@ -493,23 +508,42 @@ html, body {
   height: 72px;
   border-radius: 10px;
   overflow: hidden;
+  cursor: pointer;
 }
 .img-thumb {
   width: 100%;
   height: 100%;
   object-fit: cover;
   border-radius: 10px;
+  transition: transform 0.2s;
 }
+.img-wrap:hover .img-thumb { transform: scale(1.05); }
+.img-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 16px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  border-radius: 10px;
+}
+.img-wrap:hover .img-overlay { opacity: 1; }
 .img-del-btn {
   position: absolute;
   top: 2px; right: 2px;
   width: 22px; height: 22px;
-  background: rgba(197,40,40,.85);
+  background: rgba(197,40,40,.9);
   color: #fff; border: none;
   border-radius: 50%;
-  font-size: 14px; line-height: 22px;
+  font-size: 11px; line-height: 22px;
   text-align: center; cursor: pointer;
   padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2;
 }
 .img-add-btn {
   width: 72px; height: 72px;
@@ -519,9 +553,9 @@ html, body {
   display: flex; align-items: center; justify-content: center;
   font-size: 22px; color: #bbb;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
-.img-add-btn:active { background: #e5e5e5; }
+.img-add-btn:active { background: #e5e5e5; border-color: #E53935; }
 
 /* Image upload label (form-embedded) */
 .img-upload-label {
@@ -546,13 +580,17 @@ html, body {
   align-items: center;
   gap: 8px;
   margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid #ebebeb;
+  padding: 8px 10px;
+  background: #f8f8f8;
+  border-radius: 10px;
+  border: 1px solid #ebebeb;
 }
 .audio-player {
   flex: 1;
-  height: 40px;
+  height: 36px;
   border-radius: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Machine actions */
@@ -836,6 +874,53 @@ button, a, label, select, input[type="file"] + label, [role="button"] {
 /* ── Utility ───────────────────────────────────────────────────────────────── */
 .d-none { display: none !important; }
 
+/* ── Status flow indicator ──────────────────────────────────────────────────── */
+.status-flow {
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  gap: 0;
+  padding: 2px 0;
+  touch-action: pan-x;
+}
+.sf-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  min-width: 56px;
+}
+.sf-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  transition: transform 0.2s;
+}
+.sf-active .sf-dot { transform: scale(1.25); box-shadow: 0 0 0 3px rgba(0,0,0,.15); }
+.sf-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  line-height: 1.2;
+  max-width: 52px;
+}
+.sf-line {
+  flex: 1;
+  height: 3px;
+  min-width: 12px;
+  border-radius: 2px;
+  margin-bottom: 18px;
+  transition: background 0.4s;
+}
+
 /* ── Analytics stats bar ────────────────────────────────────────────────────── */
 .stats-bar {
   display: flex;
@@ -846,7 +931,8 @@ button, a, label, select, input[type="file"] + label, [role="button"] {
   background: #fff;
   border-bottom: 1px solid #f0f0f0;
   touch-action: pan-x;
-  min-height: 56px;
+  min-height: 64px;
+  align-items: center;
 }
 .stat-chip {
   flex-shrink: 0;
@@ -856,15 +942,19 @@ button, a, label, select, input[type="file"] + label, [role="button"] {
   justify-content: center;
   background: #f8f9fa;
   border-radius: 12px;
-  padding: 6px 14px;
-  min-width: 58px;
+  padding: 7px 14px 6px;
+  min-width: 62px;
   cursor: pointer;
   border: 1.5px solid #ececec;
-  transition: background 0.13s;
+  transition: background 0.13s, transform 0.1s;
+  will-change: transform;
 }
-.stat-chip:active { background: #ede7e7; }
+.stat-chip:active { background: #ede7e7; transform: scale(0.96); }
+.stat-chip-total { background: #1a1a2e; border-color: #1a1a2e; }
+.stat-chip-total .stat-num { color: #fff !important; }
+.stat-chip-total .stat-lbl { color: rgba(255,255,255,.6); }
 .stat-num {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 900;
   color: #1a1a2e;
   line-height: 1.1;
@@ -876,4 +966,19 @@ button, a, label, select, input[type="file"] + label, [role="button"] {
   text-transform: uppercase;
   letter-spacing: 0.3px;
   margin-top: 2px;
+}
+/* Mini progress bar inside stat chip */
+.stat-bar {
+  width: 100%;
+  height: 3px;
+  background: #e8e8e8;
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+.stat-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+  min-width: 4px;
 }

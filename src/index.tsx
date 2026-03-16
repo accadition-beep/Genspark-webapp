@@ -69,7 +69,12 @@ const adminOnly = async (c: any, next: any) => {
   await next()
 }
 
+// ── Valid statuses ───────────────────────────────────────────────────────────
+const MACHINE_STATUSES = ['received','diagnosing','in_progress','waiting_parts','ready','returned','delivered']
+const JOB_STATUSES     = ['received','diagnosing','in_progress','waiting_parts','ready','returned','delivered']
+
 // ── Job status auto-update ────────────────────────────────────────────────────
+// Maps machine statuses to job status based on priority
 async function updateJobStatus(db: D1Database, jobId: string) {
   const { results: machines } = await db.prepare(
     'SELECT status FROM machines WHERE job_id=?'
@@ -77,11 +82,17 @@ async function updateJobStatus(db: D1Database, jobId: string) {
   if (!machines.length) return
   const job = await db.prepare('SELECT status FROM jobs WHERE id=?').bind(jobId).first<any>()
   if (job?.status === 'delivered') return
-  const allReturned    = machines.every((m: any) => m.status === 'returned')
-  const anyUnderRepair = machines.some((m: any)  => m.status === 'under_repair')
-  let newStatus = anyUnderRepair ? 'under_repair' : allReturned ? 'returned' : 'repaired'
+
+  // Priority order: lower index = more urgent
+  const priority = ['received','diagnosing','in_progress','waiting_parts','ready','returned']
+  let bestStatus = 'returned'
+  for (const m of machines) {
+    const idx = priority.indexOf(m.status)
+    const bestIdx = priority.indexOf(bestStatus)
+    if (idx !== -1 && idx < bestIdx) bestStatus = m.status
+  }
   await db.prepare(`UPDATE jobs SET status=?,updated_at=datetime('now') WHERE id=?`)
-    .bind(newStatus, jobId).run()
+    .bind(bestStatus, jobId).run()
 }
 
 // ── API: Auth ─────────────────────────────────────────────────────────────────
@@ -122,25 +133,41 @@ app.get('/api/customers/by-mobile', authMiddleware, async (c) => {
 
 // ── API: Dashboard Analytics ──────────────────────────────────────────────────
 app.get('/api/analytics', authMiddleware, async (c) => {
-  const isAdmin = c.get('userRole') === 'admin'
-  const userId  = c.get('userId')
-
-  // Staff see all jobs in analytics (no filter needed)
-  const staffJoin = ''
-
+  const isAdminRole = c.get('userRole') === 'admin'
+  const userId = c.get('userId')
   const today = new Date().toISOString().split('T')[0]
   const monthStart = today.substring(0, 8) + '01'
 
-  const [total, pending, completed, todayCount, monthCount, byStatus, byStaff] = await Promise.all([
-    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin}`).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE j.status IN ('under_repair','repaired','returned')`).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE j.status='delivered'`).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE DATE(j.created_at)=?`).bind(today).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${staffJoin} WHERE j.created_at>=?`).bind(monthStart).first<any>(),
-    isAdmin ? c.env.DB.prepare(`
+  // Staff: count only jobs with at least one machine assigned to them
+  const sWhere  = !isAdminRole ? `WHERE EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})` : ''
+  const sActive = !isAdminRole
+    ? `WHERE j.status!='delivered' AND EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})`
+    : `WHERE j.status!='delivered'`
+  const sDone   = !isAdminRole
+    ? `WHERE j.status='delivered' AND EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})`
+    : `WHERE j.status='delivered'`
+  const sToday  = !isAdminRole
+    ? `WHERE DATE(j.created_at)='${today}' AND EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})`
+    : `WHERE DATE(j.created_at)='${today}'`
+  const sMonth  = !isAdminRole
+    ? `WHERE j.created_at>='${monthStart}' AND EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})`
+    : `WHERE j.created_at>='${monthStart}'`
+
+  const sReady = !isAdminRole
+    ? `WHERE j.status='ready' AND EXISTS (SELECT 1 FROM machines ms WHERE ms.job_id=j.id AND ms.assigned_staff_id=${userId})`
+    : `WHERE j.status='ready'`
+
+  const [total, pending, ready, completed, todayCount, monthCount, byStatus, byStaff] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${sWhere}`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${sActive}`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${sReady}`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${sDone}`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${sToday}`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(DISTINCT j.id) AS cnt FROM jobs j ${sMonth}`).first<any>(),
+    isAdminRole ? c.env.DB.prepare(`
       SELECT j.status, COUNT(j.id) AS cnt FROM jobs j GROUP BY j.status ORDER BY cnt DESC
     `).all<any>() : { results: [] },
-    isAdmin ? c.env.DB.prepare(`
+    isAdminRole ? c.env.DB.prepare(`
       SELECT u.name, COUNT(m.id) AS cnt, SUM(m.charges) AS total_charges
       FROM machines m JOIN users u ON m.assigned_staff_id=u.id
       GROUP BY u.id, u.name ORDER BY cnt DESC LIMIT 10
@@ -150,11 +177,12 @@ app.get('/api/analytics', authMiddleware, async (c) => {
   return c.json({
     total: total?.cnt || 0,
     pending: pending?.cnt || 0,
+    ready: ready?.cnt || 0,
     completed: completed?.cnt || 0,
     today: todayCount?.cnt || 0,
     thisMonth: monthCount?.cnt || 0,
-    byStatus: isAdmin ? byStatus.results : [],
-    byStaff: isAdmin ? byStaff.results : [],
+    byStatus: isAdminRole ? byStatus.results : [],
+    byStaff: isAdminRole ? byStaff.results : [],
   })
 })
 
@@ -171,8 +199,10 @@ app.get('/api/jobs', authMiddleware, async (c) => {
   const params: any[] = []
 
   if (status) { conds.push('j.status=?'); params.push(status) }
-  // Staff: hide delivered jobs only (can see all non-delivered jobs)
+  // Staff: ONLY see jobs with at least one machine assigned to them
   if (!isAdmin) {
+    conds.push(`EXISTS (SELECT 1 FROM machines ms2 WHERE ms2.job_id=j.id AND ms2.assigned_staff_id=?)`)
+    params.push(userId)
     conds.push("j.status != 'delivered'")
   }
   if (staffId && isAdmin) {
@@ -180,8 +210,10 @@ app.get('/api/jobs', authMiddleware, async (c) => {
     params.push(staffId)
   }
   if (search) {
-    conds.push('(j.snap_name LIKE ? OR j.snap_mobile LIKE ? OR j.id LIKE ?)')
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`)
+    // Search by customer name, mobile, job ID, or machine type/product name
+    conds.push(`(j.snap_name LIKE ? OR j.snap_mobile LIKE ? OR j.id LIKE ? OR
+      EXISTS (SELECT 1 FROM machines sm WHERE sm.job_id=j.id AND (sm.product_name LIKE ? OR sm.brand LIKE ?)))`)
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`)
   }
   if (from) { conds.push('DATE(j.created_at)>=?'); params.push(from) }
   if (to)   { conds.push('DATE(j.created_at)<=?'); params.push(to) }
@@ -191,6 +223,7 @@ app.get('/api/jobs', authMiddleware, async (c) => {
     SELECT j.id, j.snap_name, j.snap_mobile, j.status,
            j.received_amount, j.created_at, j.updated_at,
            (SELECT COUNT(*) FROM machines WHERE job_id=j.id) AS machine_count,
+           (SELECT GROUP_CONCAT(product_name, ', ') FROM machines WHERE job_id=j.id LIMIT 3) AS machine_names,
            (SELECT SUM(charges) FROM machines WHERE job_id=j.id) AS total_charges,
            (SELECT url FROM machine_images mi
             JOIN machines m2 ON mi.machine_id=m2.id
@@ -201,7 +234,7 @@ app.get('/api/jobs', authMiddleware, async (c) => {
 
   return c.json(results.map((r: any) => ({
     ...r,
-    balance_due: Math.max(0, (r.total_charges || 0) - (r.received_amount || 0))
+    balance_due: isAdmin ? Math.max(0, (r.total_charges || 0) - (r.received_amount || 0)) : undefined
   })))
 })
 
@@ -258,9 +291,14 @@ app.get('/api/jobs/:id', authMiddleware, async (c) => {
   const isAdmin = c.get('userRole') === 'admin'
   const userId  = c.get('userId')
 
-  // Staff can't fetch delivered job details
-  if (!isAdmin && job.status === 'delivered')
-    return c.json({ error: 'Forbidden' }, 403)
+  // Staff: verify they have access (at least one machine assigned to them)
+  if (!isAdmin) {
+    const access = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS cnt FROM machines WHERE job_id=? AND assigned_staff_id=?`
+    ).bind(id, userId).first<any>()
+    if (job.status === 'delivered' || !access?.cnt)
+      return c.json({ error: 'Forbidden' }, 403)
+  }
 
   const { results: machines } = await c.env.DB.prepare(`
     SELECT m.*,
@@ -280,11 +318,18 @@ app.get('/api/jobs/:id', authMiddleware, async (c) => {
   }))
   const totalCharges = enriched.reduce((s: number, m: any) => s + (m.charges || 0), 0)
 
+  // Strip financial data from staff response
+  const responseJob = isAdmin ? job : {
+    id: job.id, snap_name: job.snap_name, snap_mobile: null,
+    snap_address: job.snap_address, note: job.note,
+    status: job.status, created_at: job.created_at, updated_at: job.updated_at
+  }
+
   return c.json({
-    ...job,
+    ...responseJob,
     machines: enriched,
-    total_charges: totalCharges,
-    balance_due: Math.max(0, totalCharges - (job.received_amount || 0))
+    total_charges: isAdmin ? totalCharges : undefined,
+    balance_due: isAdmin ? Math.max(0, totalCharges - (job.received_amount || 0)) : undefined
   })
 })
 
@@ -346,14 +391,15 @@ app.post('/api/jobs/:id/machines', authMiddleware, async (c) => {
   if (!body.product_name) return c.json({ error: 'product_name required' }, 400)
   const isAdmin = c.get('userRole') === 'admin'
   const result = await c.env.DB.prepare(
-    `INSERT INTO machines(job_id,product_name,product_complaint,charges,quantity,assigned_staff_id,status)
-     VALUES(?,?,?,?,?,?,?)`
+    `INSERT INTO machines(job_id,product_name,product_complaint,charges,quantity,assigned_staff_id,status,brand)
+     VALUES(?,?,?,?,?,?,?,?)`
   ).bind(
     jobId, body.product_name, body.product_complaint || null,
     isAdmin ? (body.charges || 0) : 0,
     body.quantity || 1,
     body.assigned_staff_id || null,
-    'under_repair'
+    'received',
+    body.brand || null
   ).run()
   await updateJobStatus(c.env.DB, jobId)
   return c.json({ id: result.meta.last_row_id }, 201)
@@ -369,22 +415,25 @@ app.put('/api/machines/:id', authMiddleware, async (c) => {
   const machine = await c.env.DB.prepare('SELECT * FROM machines WHERE id=?').bind(id).first<any>()
   if (!machine) return c.json({ error: 'Not found' }, 404)
 
-  // Staff can only update status if they are the assigned_staff
+  // Staff can only update status/notes if they are the assigned_staff
   if (!isAdmin) {
     if (machine.assigned_staff_id !== userId)
       return c.json({ error: 'Not assigned to this machine' }, 403)
-    if ('status' in body) {
-      await c.env.DB.prepare(`UPDATE machines SET status=?,updated_at=datetime('now') WHERE id=?`)
-        .bind(body.status, id).run()
-      await updateJobStatus(c.env.DB, machine.job_id)
-      return c.json({ ok: true })
-    }
-    return c.json({ error: 'Nothing to update' }, 400)
+    const staffFields: string[] = []
+    const staffVals: any[] = []
+    if ('status' in body) { staffFields.push('status=?'); staffVals.push(body.status) }
+    if ('product_complaint' in body) { staffFields.push('product_complaint=?'); staffVals.push(body.product_complaint) }
+    if (!staffFields.length) return c.json({ error: 'Nothing to update' }, 400)
+    staffFields.push(`updated_at=datetime('now')`)
+    staffVals.push(id)
+    await c.env.DB.prepare(`UPDATE machines SET ${staffFields.join(',')} WHERE id=?`).bind(...staffVals).run()
+    await updateJobStatus(c.env.DB, machine.job_id)
+    return c.json({ ok: true })
   }
 
   const fields: string[] = []
   const vals: any[] = []
-  const allowed = ['product_name','product_complaint','quantity','assigned_staff_id','status','charges']
+  const allowed = ['product_name','product_complaint','quantity','assigned_staff_id','status','charges','brand']
   for (const k of allowed) {
     if (k in body) { fields.push(`${k}=?`); vals.push(body[k]) }
   }
@@ -779,27 +828,45 @@ app.get('/api/reports/staff', authMiddleware, adminOnly, async (c) => {
   })
 })
 
-// Staff: export their own jobs
+// Staff: export their own jobs — excludes customer mobile and financial data per RBAC
 app.get('/api/reports/my-jobs', authMiddleware, async (c) => {
   const from   = c.req.query('from') || ''
   const to     = c.req.query('to')   || ''
   const userId = c.get('userId')
-  let q = `
-    SELECT j.id AS job_id, j.snap_name AS customer_name, j.snap_mobile AS phone,
-           m.product_name AS machine_type, m.product_complaint AS problem_description,
-           m.status AS job_status, u.name AS assigned_staff,
-           m.charges, DATE(j.created_at) AS created_date
-    FROM machines m
-    JOIN jobs j ON m.job_id=j.id
-    LEFT JOIN users u ON m.assigned_staff_id=u.id
-    WHERE m.assigned_staff_id=?`
+  const isStaff = c.get('userRole') !== 'admin'
+  // Staff export: no mobile, no charges/financial data
+  // Admin can also use this endpoint for a quick personal view
+  let q
+  if (isStaff) {
+    q = `
+      SELECT j.id AS "Job ID", j.snap_name AS "Customer Name",
+             m.product_name AS "Machine Type", m.brand AS "Brand",
+             m.product_complaint AS "Problem Description",
+             m.status AS "Job Status", u.name AS "Assigned Staff",
+             DATE(j.created_at) AS "Created Date"
+      FROM machines m
+      JOIN jobs j ON m.job_id=j.id
+      LEFT JOIN users u ON m.assigned_staff_id=u.id
+      WHERE m.assigned_staff_id=?`
+  } else {
+    q = `
+      SELECT j.id AS "Job ID", j.snap_name AS "Customer Name", j.snap_mobile AS "Phone",
+             m.product_name AS "Machine Type", m.brand AS "Brand",
+             m.product_complaint AS "Problem Description",
+             m.status AS "Job Status", u.name AS "Assigned Staff",
+             m.charges AS "Charges", DATE(j.created_at) AS "Created Date"
+      FROM machines m
+      JOIN jobs j ON m.job_id=j.id
+      LEFT JOIN users u ON m.assigned_staff_id=u.id
+      WHERE m.assigned_staff_id=?`
+  }
   const ps: any[] = [userId]
   if (from) { q += ' AND DATE(j.created_at)>=?'; ps.push(from) }
   if (to)   { q += ' AND DATE(j.created_at)<=?'; ps.push(to) }
   q += ' ORDER BY j.created_at DESC'
   const { results } = await c.env.DB.prepare(q).bind(...ps).all<any>()
   const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(results), 'My Jobs')
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(results.length ? results : [{}]), 'My Jobs')
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
   const date = new Date().toISOString().slice(0, 10)
   return new Response(buf, {

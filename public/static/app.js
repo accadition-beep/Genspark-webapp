@@ -59,9 +59,18 @@ const fmtRs   = n => '₹' + (parseFloat(n) || 0).toLocaleString('en-IN', { mini
 const fmtDate = d => d ? new Date(d).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' }) : '';
 const esc     = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-const STATUS_COLOR = { under_repair:'#E53935', repaired:'#43A047', returned:'#B8860B', delivered:'#1E88E5' };
-const STATUS_BG    = { under_repair:'#FFEBEE', repaired:'#E8F5E9', returned:'#FFF8E1', delivered:'#E3F2FD' };
-const STATUS_LABEL = { under_repair:'Under Repair', repaired:'Repaired', returned:'Returned', delivered:'Delivered' };
+const STATUS_COLOR = {
+  received:'#8E24AA', diagnosing:'#FB8C00', in_progress:'#E53935',
+  waiting_parts:'#F4511E', ready:'#43A047', returned:'#B8860B', delivered:'#1E88E5'
+};
+const STATUS_BG = {
+  received:'#F3E5F5', diagnosing:'#FFF3E0', in_progress:'#FFEBEE',
+  waiting_parts:'#FBE9E7', ready:'#E8F5E9', returned:'#FFF8E1', delivered:'#E3F2FD'
+};
+const STATUS_LABEL = {
+  received:'Received', diagnosing:'Diagnosing', in_progress:'In Progress',
+  waiting_parts:'Waiting Parts', ready:'Ready', returned:'Returned', delivered:'Delivered'
+};
 const sc = s => STATUS_COLOR[s] || '#888';
 const sb = s => STATUS_BG[s]    || '#f5f5f5';
 const sl = s => STATUS_LABEL[s] || s;
@@ -114,9 +123,10 @@ function closeModal() {
 window.closeModal = closeModal;
 // Expose global helpers used in inline onclick attributes
 window.setFilter  = setFilter;
-window.filterAll    = function() { setFilter('');             S.fromDate = ''; S.toDate = ''; loadJobs(); };
-window.filterActive = function() { setFilter('under_repair'); S.fromDate = ''; S.toDate = ''; loadJobs(); };
-window.filterDone   = function() { setFilter('delivered');    S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterAll    = function() { setFilter('');          S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterActive = function() { setFilter('in_progress'); S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterDone   = function() { setFilter('delivered');   S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterReady  = function() { setFilter('ready');       S.fromDate = ''; S.toDate = ''; loadJobs(); };
 window.filterToday  = function() {
   const t = new Date().toISOString().split('T')[0];
   setFilter(''); S.fromDate = t; S.toDate = t; loadJobs();
@@ -415,14 +425,17 @@ function bindView() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DASHBOARD — virtual-scroll list
+// DASHBOARD — virtual-scroll list with analytics
 // ─────────────────────────────────────────────────────────────────────────────
 function dashboardHTML() {
   const filters = [
     { s:'',             label:'All' },
-    { s:'under_repair', label:'Under Repair' },
-    { s:'repaired',     label:'Repaired' },
-    { s:'returned',     label:'Returned' },
+    { s:'received',     label:'Received' },
+    { s:'diagnosing',   label:'Diagnosing' },
+    { s:'in_progress',  label:'In Progress' },
+    { s:'waiting_parts',label:'Waiting Parts' },
+    { s:'ready',        label:'Ready' },
+    ...(isAdmin() ? [{ s:'returned',  label:'Returned' }] : []),
     ...(isAdmin() ? [{ s:'delivered', label:'Delivered' }] : []),
   ];
   return `
@@ -437,7 +450,7 @@ function dashboardHTML() {
     <div class="search-wrap">
       <i class="fas fa-search search-icon"></i>
       <input id="dash-search" type="search" class="search-input"
-             placeholder="Search name, mobile, job ID…" value="${esc(S.search)}"
+             placeholder="Search name, mobile, job ID, machine…" value="${esc(S.search)}"
              autocomplete="off" autocorrect="off" spellcheck="false">
     </div>
     <div id="vlist-wrap" class="vlist-wrap" style="flex:1"></div>
@@ -452,21 +465,37 @@ async function loadJobs() {
     const sb = document.getElementById('stats-bar');
     if (!sb) return;
     const d = r.data;
+    const total = d.total || 1; // avoid div/0
+    const pendingPct = Math.round(((d.pending||0)/total)*100);
+    const donePct    = Math.round(((d.completed||0)/total)*100);
+    const readyPct   = Math.round(((d.ready||0)/total)*100);
     sb.innerHTML = `
-      <div class="stat-chip" onclick="filterAll()">
-        <span class="stat-num">${d.total}</span><span class="stat-lbl">Total</span>
+      <div class="stat-chip stat-chip-total" onclick="filterAll()" title="All Jobs">
+        <span class="stat-num">${d.total}</span>
+        <span class="stat-lbl">Total</span>
       </div>
-      <div class="stat-chip" onclick="filterActive()">
-        <span class="stat-num" style="color:#E53935">${d.pending}</span><span class="stat-lbl">Active</span>
+      <div class="stat-chip" onclick="filterActive()" title="Active jobs">
+        <span class="stat-num" style="color:#E53935">${d.pending}</span>
+        <span class="stat-lbl">Active</span>
+        <div class="stat-bar"><div class="stat-bar-fill" style="width:${pendingPct}%;background:#E53935"></div></div>
       </div>
-      <div class="stat-chip" onclick="filterDone()">
-        <span class="stat-num" style="color:#43A047">${d.completed}</span><span class="stat-lbl">Done</span>
+      <div class="stat-chip" onclick="filterReady()" title="Ready for pickup">
+        <span class="stat-num" style="color:#43A047">${d.ready||0}</span>
+        <span class="stat-lbl">Ready</span>
+        <div class="stat-bar"><div class="stat-bar-fill" style="width:${readyPct}%;background:#43A047"></div></div>
       </div>
-      <div class="stat-chip" onclick="filterToday()">
-        <span class="stat-num" style="color:#1E88E5">${d.today}</span><span class="stat-lbl">Today</span>
+      <div class="stat-chip" onclick="filterDone()" title="Completed/Delivered">
+        <span class="stat-num" style="color:#1E88E5">${d.completed}</span>
+        <span class="stat-lbl">Done</span>
+        <div class="stat-bar"><div class="stat-bar-fill" style="width:${donePct}%;background:#1E88E5"></div></div>
       </div>
-      <div class="stat-chip" onclick="filterMonth()">
-        <span class="stat-num" style="color:#FB8C00">${d.thisMonth}</span><span class="stat-lbl">Month</span>
+      <div class="stat-chip" onclick="filterToday()" title="Jobs created today">
+        <span class="stat-num" style="color:#7B1FA2">${d.today}</span>
+        <span class="stat-lbl">Today</span>
+      </div>
+      <div class="stat-chip" onclick="filterMonth()" title="Jobs this month">
+        <span class="stat-num" style="color:#FB8C00">${d.thisMonth}</span>
+        <span class="stat-lbl">Month</span>
       </div>`;
   }).catch(() => {
     const sb = document.getElementById('stats-bar');
@@ -528,20 +557,21 @@ function renderVList() {
   }
 
   paint();
+  requestAnimationFrame(() => applyAuthImages(wrap));
   wrap.addEventListener('scroll', () => { paint(); requestAnimationFrame(() => applyAuthImages(wrap)); }, { passive: true });
-  setTimeout(() => applyAuthImages(wrap), 50);
 }
 
 function jobRowHTML(j) {
   const color   = sc(j.status);
   const bg      = sb(j.status);
   const balance = Math.max(0, (j.total_charges || 0) - (j.received_amount || 0));
+  const machineLabel = j.machine_names ? esc(j.machine_names).substring(0, 45) : '';
   return `
   <div class="job-row" data-id="${j.id}" style="border-left-color:${color};will-change:transform,opacity">
-    <div class="job-row-thumb">
+    <div class="job-row-thumb" style="background:${bg}">
       ${j.thumb
         ? `<img data-auth-src="${j.thumb}" class="thumb-img" loading="lazy" alt="thumb">`
-        : `<i class="fas fa-tools" style="color:#bbb;font-size:22px"></i>`}
+        : `<div class="thumb-placeholder" style="color:${color}"><i class="fas fa-tools"></i></div>`}
     </div>
     <div class="job-row-body">
       <div class="job-row-top">
@@ -549,11 +579,13 @@ function jobRowHTML(j) {
         <span class="status-chip" style="background:${bg};color:${color};border-color:${color}">${sl(j.status)}</span>
       </div>
       <div class="job-name">${esc(j.snap_name)}</div>
+      ${machineLabel ? `<div class="job-machine-lbl"><i class="fas fa-wrench" style="font-size:11px;color:#aaa;margin-right:3px"></i>${machineLabel}</div>` : ''}
       <div class="job-row-foot">
-        <span class="job-meta"><i class="fas fa-tools"></i> ${j.machine_count || 0}</span>
-        ${isAdmin()
-          ? `<span class="job-balance" style="color:${balance>0?'#E53935':'#43A047'}">Bal: ${fmtRs(balance)}</span>`
-          : `<span class="job-meta" style="color:#888">${fmtDate(j.created_at)}</span>`}
+        <span class="job-meta"><i class="fas fa-cogs" style="font-size:11px;margin-right:2px"></i>${j.machine_count || 0} item${(j.machine_count||0)!==1?'s':''}</span>
+        <span class="job-meta">${fmtDate(j.created_at)}</span>
+        ${isAdmin() && balance > 0
+          ? `<span class="job-balance" style="color:#E53935"><i class="fas fa-rupee-sign" style="font-size:10px"></i>${fmtRs(balance)}</span>`
+          : ''}
       </div>
     </div>
   </div>`;
@@ -778,15 +810,43 @@ function renderDetail() {
   const balance  = Math.max(0, total - received);
   const userId   = S.user?.id;
 
+  // Status progress flow indicator
+  const statusFlow = ['received','diagnosing','in_progress','waiting_parts','ready','delivered'];
+  const curIdx = statusFlow.indexOf(j.status);
+  const progressHTML = `
+  <div class="status-flow">
+    ${statusFlow.map((s, i) => {
+      const done = i < curIdx;
+      const active = i === curIdx;
+      const c = done ? '#43A047' : (active ? color : '#ddd');
+      const tc = done || active ? '#fff' : '#bbb';
+      return `<div class="sf-step ${active?'sf-active':''}${done?' sf-done':''}">
+        <div class="sf-dot" style="background:${c};color:${tc}">
+          ${done ? '<i class="fas fa-check" style="font-size:9px"></i>' : (i+1)}
+        </div>
+        <div class="sf-label" style="color:${active?color:(done?'#43A047':'#bbb')}">${sl(s)}</div>
+      </div>
+      ${i < statusFlow.length-1 ? `<div class="sf-line" style="background:${i < curIdx?'#43A047':'#e0e0e0'}"></div>` : ''}`;
+    }).join('')}
+  </div>`;
+
   root.innerHTML = `
     <!-- Status Banner -->
     <div class="detail-banner" style="background:${color}">
       <span class="detail-job-id">${j.id}</span>
-      <span class="detail-status-label">${sl(j.status)}</span>
+      <span class="detail-status-label"><i class="fas fa-circle" style="font-size:8px;margin-right:5px"></i>${sl(j.status)}</span>
+    </div>
+
+    <!-- Status Flow -->
+    <div class="card mt-3" style="padding:14px 12px 10px">
+      ${progressHTML}
     </div>
 
     <!-- Customer Card -->
     <div class="card mt-3">
+      <div class="section-title" style="margin-bottom:8px">
+        <i class="fas fa-user-circle" style="color:${color}"></i> Customer
+      </div>
       <div class="info-row">
         <i class="fas fa-user info-icon" style="color:${color}"></i>
         <span class="info-val fw-bold">${esc(j.snap_name)}</span>
@@ -807,18 +867,16 @@ function renderDetail() {
         <i class="fas fa-sticky-note info-icon" style="color:${color}"></i>
         <span class="info-val text-muted">${esc(j.note)}</span>
       </div>` : ''}
-      <div class="info-row">
-        <i class="fas fa-calendar info-icon" style="color:${color}"></i>
+      <div class="info-row" style="border:none">
+        <i class="fas fa-calendar-alt info-icon" style="color:${color}"></i>
         <span class="info-val text-muted">${fmtDate(j.created_at)}</span>
       </div>
     </div>
 
-    <!-- Financial Panel
-         Admin: itemized breakdown per machine + Total + Received + Balance
-         Staff: ONLY Balance Due — no amounts, no Repair Amount, no Received  -->
+    <!-- Financial Panel — Admin only; staff sees no financial data -->
+    ${isAdmin() ? `
     <div class="card mt-3 financial-panel">
       <div class="fin-title"><i class="fas fa-rupee-sign"></i> Financials</div>
-      ${isAdmin() ? `
         ${(j.machines||[]).map(m => `
         <div class="fin-machine-row">
           <span class="fin-machine-name">${esc(m.product_name)}${m.quantity>1?` ×${m.quantity}`:''}</span>
@@ -832,21 +890,21 @@ function renderDetail() {
         <div class="fin-row">
           <span class="fin-label">Received Amount</span>
           <span class="fin-amount" style="color:#43A047">${fmtRs(received)}</span>
-        </div>` : ''}
+        </div>
       <div class="fin-row fin-balance">
         <span class="fin-label fw-bold">Balance Due</span>
         <span class="fin-amount fw-bold" style="color:${balance>0?'#E53935':'#43A047'}">${fmtRs(balance)}</span>
       </div>
-      ${isAdmin() && j.status !== 'delivered' ? `
+      ${j.status !== 'delivered' ? `
       <div class="fin-edit-row">
         <label class="form-label" style="margin:0">Update Received Amount (₹)</label>
         <div style="display:flex;gap:8px;margin-top:6px">
           <input id="recv-input" type="number" class="form-input" style="flex:1"
                  value="${received}" min="0" placeholder="0" inputmode="decimal">
-          <button id="recv-save" class="btn-sm btn-green">Save</button>
+          <button id="recv-save" class="btn-sm btn-green"><i class="fas fa-save"></i> Save</button>
         </div>
       </div>` : ''}
-    </div>
+    </div>` : ''}<!-- end financial panel -->
 
     ${j.status === 'delivered' && j.delivery_receiver_name ? `
     <!-- Delivery Info Card -->
@@ -887,7 +945,7 @@ function renderDetail() {
         <i class="fas fa-file-image"></i><span>Download</span>
       </button>
       <button id="btn-share" class="action-btn" style="background:#25D366">
-        <i class="fab fa-whatsapp"></i><span>${j.status==='delivered'?'Share':'Share'}</span>
+        <i class="fab fa-whatsapp"></i><span>WhatsApp</span>
       </button>
       <button id="btn-del-job" class="action-btn" style="background:#E53935">
         <i class="fas fa-trash"></i><span>Delete</span>
@@ -899,13 +957,14 @@ function renderDetail() {
       <div class="section-header">
         <h3 class="section-title" style="margin:0">
           <i class="fas fa-tools" style="color:#E53935"></i> Machines
+          <span style="font-size:12px;font-weight:600;color:#888;margin-left:6px">${(j.machines||[]).length} item${(j.machines||[]).length!==1?'s':''}</span>
         </h3>
-        <button id="btn-add-machine" class="btn-sm btn-red">+ Add</button>
+        <button id="btn-add-machine" class="btn-sm btn-red"><i class="fas fa-plus"></i> Add</button>
       </div>
       <div id="machines-container">
         ${(j.machines||[]).length
           ? (j.machines||[]).map(m => machineCardHTML(m, userId)).join('')
-          : '<p class="text-muted text-center" style="padding:20px">No machines yet — tap + Add</p>'}
+          : '<div class="empty-state" style="padding:24px"><i class="fas fa-tools fa-2x" style="color:#ddd"></i><p style="color:#bbb;margin:8px 0 0">No machines yet — tap + Add</p></div>'}
       </div>
     </div>
 
@@ -953,50 +1012,59 @@ function machineCardHTML(m, currentUserId) {
     ? m.audio_note_url.replace('/api/images/audio/', '/api/audio/')
     : null;
 
+  const imagesHtml = (m.images||[]).map(img => `
+  <div class="img-wrap" onclick="openImageViewer('${img.url}')" title="Click to enlarge">
+    <img data-auth-src="${img.url}" class="img-thumb" loading="lazy" alt="Product image">
+    <div class="img-overlay"><i class="fas fa-expand-alt"></i></div>
+    ${isAdmin() ? `<button class="img-del-btn" data-iid="${img.id}" title="Remove image" onclick="event.stopPropagation()"><i class="fas fa-times" style="font-size:10px"></i></button>` : ''}
+  </div>`).join('');
+
   return `
   <div class="machine-card" style="border-left-color:${color};will-change:transform,opacity">
     <div class="machine-top">
       <div style="flex:1;min-width:0">
         <div class="machine-name">${esc(m.product_name)}${m.quantity>1?` <span class="machine-qty">×${m.quantity}</span>`:''}</div>
-        ${m.product_complaint ? `<div class="machine-complaint">${esc(m.product_complaint)}</div>` : ''}
-        ${m.staff_name ? `<div class="machine-staff"><i class="fas fa-user-cog"></i> ${esc(m.staff_name)}</div>` : ''}
+        ${m.brand ? `<div class="machine-brand"><i class="fas fa-tag" style="color:#aaa;font-size:11px;margin-right:3px"></i>${esc(m.brand)}</div>` : ''}
+        ${m.product_complaint ? `<div class="machine-complaint"><i class="fas fa-exclamation-circle" style="color:#FB8C00;font-size:11px;margin-right:3px"></i>${esc(m.product_complaint)}</div>` : ''}
+        ${m.staff_name ? `<div class="machine-staff"><i class="fas fa-user-cog" style="margin-right:4px"></i>${esc(m.staff_name)}</div>` : '<div class="machine-staff unassigned"><i class="fas fa-user-slash" style="margin-right:4px;opacity:.5"></i><span style="opacity:.5">Unassigned</span></div>'}
       </div>
       <div class="machine-right">
         ${isAdmin() ? `<div class="machine-charges">${fmtRs(m.charges)}</div>` : ''}
         ${isAssigned ? `
         <select data-mid="${m.id}" class="status-sel" style="border-color:${color};color:${color}">
-          <option value="under_repair" ${m.status==='under_repair'?'selected':''}>Under Repair</option>
-          <option value="repaired"     ${m.status==='repaired'    ?'selected':''}>Repaired</option>
-          <option value="returned"     ${m.status==='returned'    ?'selected':''}>Returned</option>
+          <option value="received"      ${m.status==='received'      ?'selected':''}>Received</option>
+          <option value="diagnosing"    ${m.status==='diagnosing'    ?'selected':''}>Diagnosing</option>
+          <option value="in_progress"   ${m.status==='in_progress'   ?'selected':''}>In Progress</option>
+          <option value="waiting_parts" ${m.status==='waiting_parts' ?'selected':''}>Waiting Parts</option>
+          <option value="ready"         ${m.status==='ready'         ?'selected':''}>Ready</option>
+          <option value="returned"      ${m.status==='returned'      ?'selected':''}>Returned</option>
         </select>` : `
         <span class="status-chip" style="background:${sb(m.status)};color:${color};border:1px solid ${color}">${sl(m.status)}</span>`}
       </div>
     </div>
 
     <!-- Images row with embedded camera upload -->
+    ${(m.images||[]).length || isAssigned ? `
     <div class="images-row">
-      ${(m.images||[]).map(img => `
-      <div class="img-wrap" onclick="openImageViewer('${img.url}')" style="cursor:pointer">
-        <img data-auth-src="${img.url}" class="img-thumb" loading="lazy" alt="">
-        ${isAdmin() ? `<button class="img-del-btn" data-iid="${img.id}" title="Remove" onclick="event.stopPropagation()">×</button>` : ''}
-      </div>`).join('')}
-      <!-- Camera button — part of machine details, available to all -->
+      ${imagesHtml}
+      <!-- Camera button — available to assigned users -->
       <label class="img-add-btn" title="Take / pick photo">
         <i class="fas fa-camera"></i>
         <input type="file" accept="image/*" capture="environment"
                data-mid="${m.id}" class="img-file-input" style="display:none">
       </label>
-    </div>
+    </div>` : ''}
 
-    <!-- Audio Note Section (admin & staff — not public) -->
+    <!-- Audio Note Section (admin & staff only — not on customer job card) -->
     <div class="audio-row">
       ${audioUrl ? `
       <div style="flex:1;display:flex;align-items:center;gap:6px;min-width:0">
-        <audio controls data-audio-src="${audioUrl}" class="audio-player" preload="none" style="flex:1;min-width:0"></audio>
-        ${isAdmin() ? `<button data-mid="${m.id}" class="btn-sm btn-red btn-del-audio" title="Delete"><i class="fas fa-trash"></i></button>` : ''}
+        <i class="fas fa-microphone-alt" style="color:#E53935;font-size:14px;flex-shrink:0"></i>
+        <audio controls data-audio-src="${audioUrl}" class="audio-player" preload="none" style="flex:1;min-width:0;max-width:calc(100% - 60px)"></audio>
+        ${isAdmin() ? `<button data-mid="${m.id}" class="btn-sm btn-red btn-del-audio" title="Delete voice note" style="padding:0 8px;min-height:32px"><i class="fas fa-trash"></i></button>` : ''}
       </div>` : `
-      <button data-mid="${m.id}" class="btn-sm btn-orange btn-rec-audio">
-        <i class="fas fa-microphone"></i> Voice Note
+      <button data-mid="${m.id}" class="btn-sm btn-orange btn-rec-audio" style="flex:1">
+        <i class="fas fa-microphone"></i> Record Voice Note
       </button>`}
     </div>
 
@@ -1010,7 +1078,7 @@ function machineCardHTML(m, currentUserId) {
       </button>
     </div>` : staffNotAssigned ? `
     <div class="machine-actions">
-      <button data-mid="${m.id}" data-jid="${S.job?.id||''}" class="btn-sm btn-blue btn-request-assign">
+      <button data-mid="${m.id}" data-jid="${S.job?.id||''}" class="btn-sm btn-blue btn-request-assign" style="flex:1">
         <i class="fas fa-hand-paper"></i> Request Assignment
       </button>
     </div>` : ''}
@@ -1281,7 +1349,11 @@ function showAddMachineModal(jobId) {
     <h3 class="modal-title"><i class="fas fa-plus" style="color:#E53935"></i> Add Machine</h3>
     <div class="form-group">
       <label class="form-label">Product Name <span class="req">*</span></label>
-      <input id="am-prod" type="text" class="form-input" placeholder="e.g. LG AC 1.5T">
+      <input id="am-prod" type="text" class="form-input" placeholder="e.g. Philips Hair Dryer">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Brand / Model</label>
+      <input id="am-brand" type="text" class="form-input" placeholder="e.g. Philips, Wahl, Panasonic">
     </div>
     <div class="form-group">
       <label class="form-label">Complaint / Issue <span class="req">*</span></label>
@@ -1341,6 +1413,7 @@ function showAddMachineModal(jobId) {
     try {
       const machR = await API.post(`/api/jobs/${jobId}/machines`, {
         product_name:      prod,
+        brand:             document.getElementById('am-brand')?.value.trim() || null,
         product_complaint: document.getElementById('am-comp')?.value.trim() || null,
         charges:           isAdmin() ? (parseFloat(document.getElementById('am-chg')?.value) || 0) : 0,
         quantity:          parseInt(document.getElementById('am-qty')?.value) || 1,
@@ -1374,6 +1447,10 @@ function showEditMachineModal(m) {
     <div class="form-group">
       <label class="form-label">Product Name <span class="req">*</span></label>
       <input id="em-prod" type="text" class="form-input" value="${esc(m.product_name)}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Brand / Model</label>
+      <input id="em-brand" type="text" class="form-input" value="${esc(m.brand||'')}" placeholder="e.g. Philips, Wahl">
     </div>
     <div class="form-group">
       <label class="form-label">Complaint / Issue</label>
@@ -1411,6 +1488,7 @@ function showEditMachineModal(m) {
     try {
       await API.put(`/api/machines/${m.id}`, {
         product_name:      prod,
+        brand:             document.getElementById('em-brand')?.value.trim() || null,
         product_complaint: document.getElementById('em-comp')?.value.trim() || null,
         ...(isAdmin() ? { charges: parseFloat(document.getElementById('em-chg')?.value) || 0 } : {}),
         quantity:          parseInt(document.getElementById('em-qty')?.value) || 1,
@@ -1636,21 +1714,34 @@ async function generateAndShareJobCard(j, shareMode) {
     canvas.toBlob(async blob => {
       const file = new File([blob], `AES_${j.id}.jpg`, { type: 'image/jpeg' });
       const text = shareText(j);
-      if (shareMode && navigator.share && navigator.canShare?.({ files: [file] })) {
-        try { await navigator.share({ files: [file], title: `Job ${j.id}`, text }); return; }
-        catch (_) { /* fall through */ }
-      }
-      const url = URL.createObjectURL(blob);
-      const a   = document.createElement('a');
-      a.href = url; a.download = `AES_${j.id}.jpg`;
+
+      // 1. Always download the JPG first (works in every browser)
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl; a.download = `AES_${j.id}.jpg`;
       document.body.appendChild(a); a.click();
       document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+
       if (shareMode) {
-        try { await navigator.clipboard.writeText(text); toast('Card saved & text copied!', 'success'); }
-        catch (_) { toast('Card downloaded', 'success'); }
+        // 2a. Try native Web Share (Android Chrome, Safari)
+        if (navigator.share && navigator.canShare?.({ files: [file] })) {
+          try { await navigator.share({ files: [file], title: `Job ${j.id}`, text }); return; }
+          catch (_) { /* fall through to deep link */ }
+        }
+        // 2b. WhatsApp deep link — works in ALL browsers including desktop Chrome
+        // Strip non-digits from mobile; use customer mobile
+        const rawMobile = (j.snap_mobile || '').replace(/\D/g, '');
+        // Prefer Indian numbers: prepend 91 if 10-digit
+        const waNumber = rawMobile.length === 10 ? '91' + rawMobile : rawMobile;
+        const waText   = encodeURIComponent(text);
+        const waUrl    = waNumber
+          ? `https://wa.me/${waNumber}?text=${waText}`
+          : `https://wa.me/?text=${waText}`;
+        setTimeout(() => { window.open(waUrl, '_blank', 'noopener'); }, 600);
+        toast('JPG saved — WhatsApp opening…', 'success');
       } else {
-        toast('Job card downloaded', 'success');
+        toast('Job card downloaded ✅', 'success');
       }
     }, 'image/jpeg', 0.92);
   } catch (e) {
@@ -2096,7 +2187,7 @@ function settingsHTML() {
       <i class="fas fa-chevron-right" style="color:#ccc"></i>
     </div>
     <div style="text-align:center;margin-top:24px;color:#bbb;font-size:13px">
-      ✨ adition™ since 1984 · v10.0<br>
+      ✨ adition™ since 1984 · v11.0<br>
       Gheekanta, Ahmedabad 380001
     </div>
   </div>`;
