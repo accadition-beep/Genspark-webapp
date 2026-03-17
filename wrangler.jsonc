@@ -11,12 +11,13 @@
       "database_id": "a19a17e5-8eb6-4f95-ade2-8db2abf222f4"
     }
   ],
-  "r2_buckets": [
-    {
-      "binding": "PRODUCT_IMAGES",
-      "bucket_name": "adition-images"
-    }
-  ],
+  // R2 bucket — enable after creating bucket in Cloudflare dashboard
+  // "r2_buckets": [
+  //   {
+  //     "binding": "PRODUCT_IMAGES",
+  //     "bucket_name": "adition-images"
+  //   }
+  // ],
   "vars": {
     "JWT_SECRET": "change-me-in-production-use-wrangler-secret"
   }
