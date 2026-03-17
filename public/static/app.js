@@ -1,6 +1,6 @@
 // ╔══════════════════════════════════════════════════════════════════════╗
-// ║  ADITION ELECTRIC SOLUTION — PWA Frontend v9                        ║
-// ║  "iQOO 13 Flagship Edition"                                          ║
+// ║  ADITION ELECTRIC SOLUTION — PWA Frontend v12                       ║
+// ║  "Full Feature Edition"                                              ║
 // ║  · 10ms debounce search · passive:true touch · touch-action:pan-y   ║
 // ║  · Strict RBAC: staff sees NO prices / NO share / NO mobiles        ║
 // ║  · Per-machine Repair Amount · real-time itemized balance            ║
@@ -24,10 +24,13 @@ const S = {
   view   : 'login',
   jobId  : null,
   jobs   : [],
+  jobsPage: 1,
+  jobsTotal: 0,
+  jobsPages: 1,
   job    : null,
   staff  : [],
   requests: [],
-  filter : new URLSearchParams(window.location.search).get('status') || 'under_repair',
+  filter : new URLSearchParams(window.location.search).get('status') || '',
   search : '',
   fromDate: '',
   toDate  : '',
@@ -123,19 +126,19 @@ function closeModal() {
 window.closeModal = closeModal;
 // Expose global helpers used in inline onclick attributes
 window.setFilter  = setFilter;
-window.filterAll    = function() { setFilter('');          S.fromDate = ''; S.toDate = ''; loadJobs(); };
-window.filterActive = function() { setFilter('in_progress'); S.fromDate = ''; S.toDate = ''; loadJobs(); };
-window.filterDone   = function() { setFilter('delivered');   S.fromDate = ''; S.toDate = ''; loadJobs(); };
-window.filterReady  = function() { setFilter('ready');       S.fromDate = ''; S.toDate = ''; loadJobs(); };
+window.filterActive = function() { setFilter('in_progress'); S.fromDate = ''; S.toDate = ''; S.jobsPage = 1; loadJobs(); };
+window.filterDone   = function() { setFilter('delivered');   S.fromDate = ''; S.toDate = ''; S.jobsPage = 1; loadJobs(); };
+window.filterReady  = function() { setFilter('ready');       S.fromDate = ''; S.toDate = ''; S.jobsPage = 1; loadJobs(); };
+window.filterAll    = function() { setFilter('');            S.fromDate = ''; S.toDate = ''; S.jobsPage = 1; loadJobs(); };
 window.filterToday  = function() {
   const t = new Date().toISOString().split('T')[0];
-  setFilter(''); S.fromDate = t; S.toDate = t; loadJobs();
+  setFilter(''); S.fromDate = t; S.toDate = t; S.jobsPage = 1; loadJobs();
 };
 window.filterMonth  = function() {
   const now = new Date();
   const ms  = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
   const me  = now.toISOString().split('T')[0];
-  setFilter(''); S.fromDate = ms; S.toDate = me; loadJobs();
+  setFilter(''); S.fromDate = ms; S.toDate = me; S.jobsPage = 1; loadJobs();
 };
 
 function setFilter(s) {
@@ -503,12 +506,15 @@ async function loadJobs() {
   });
   try {
     const params = {};
-    if (S.filter)   params.status = S.filter;
-    if (S.search)   params.q      = S.search;
-    if (S.fromDate) params.from   = S.fromDate;
-    if (S.toDate)   params.to     = S.toDate;
+    if (S.filter)    params.status = S.filter;
+    if (S.search)    params.q      = S.search;
+    if (S.fromDate)  params.from   = S.fromDate;
+    if (S.toDate)    params.to     = S.toDate;
+    params.page = S.jobsPage || 1;
     const r = await API.get('/api/jobs', { params });
-    S.jobs = r.data;
+    S.jobs = r.data.results || r.data;
+    S.jobsTotal = r.data.pagination?.total || S.jobs.length;
+    S.jobsPages = r.data.pagination?.pages || 1;
     renderVList();
   } catch {
     if (wrap) wrap.innerHTML = `<div class="empty-state"><i class="fas fa-exclamation-circle fa-2x" style="color:#e53935"></i><p>Error loading jobs</p></div>`;
@@ -517,15 +523,25 @@ async function loadJobs() {
   document.querySelectorAll('[data-filter]').forEach(btn => {
     btn.addEventListener('click', () => {
       setFilter(btn.dataset.filter);
+      S.jobsPage = 1;
       render();
     }, { passive: true });
   });
 
   const dSearch = debounce(() => {
     S.search = document.getElementById('dash-search')?.value.trim() || '';
+    S.jobsPage = 1;
     loadJobs();
-  }, 10);
+  }, 300);
   document.getElementById('dash-search')?.addEventListener('input', dSearch);
+
+  // Pagination controls
+  document.getElementById('page-prev')?.addEventListener('click', () => {
+    if (S.jobsPage > 1) { S.jobsPage--; loadJobs(); }
+  }, { passive: true });
+  document.getElementById('page-next')?.addEventListener('click', () => {
+    if (S.jobsPage < S.jobsPages) { S.jobsPage++; loadJobs(); }
+  }, { passive: true });
 }
 
 function renderVList() {
@@ -549,11 +565,24 @@ function renderVList() {
     wrap.innerHTML =
       `<div style="height:${topH}px;pointer-events:none"></div>` +
       visible.map(j => jobRowHTML(j)).join('') +
-      `<div style="height:${botH}px;pointer-events:none"></div>`;
+      `<div style="height:${botH}px;pointer-events:none"></div>` +
+      (S.jobsPages > 1 ? `
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;border-top:1px solid #f0f0f0;margin-top:4px">
+        <button id="page-prev" class="btn-sm btn-ghost" ${S.jobsPage<=1?'disabled':''} style="${S.jobsPage<=1?'opacity:.4':''}"><i class="fas fa-chevron-left"></i></button>
+        <span style="font-size:13px;color:#888;font-weight:600">Page ${S.jobsPage}/${S.jobsPages} · ${S.jobsTotal} jobs</span>
+        <button id="page-next" class="btn-sm btn-ghost" ${S.jobsPage>=S.jobsPages?'disabled':''} style="${S.jobsPage>=S.jobsPages?'opacity:.4':''}"><i class="fas fa-chevron-right"></i></button>
+      </div>` : '');
 
     wrap.querySelectorAll('.job-row').forEach(row => {
       row.addEventListener('click', () => navigate('detail', { jobId: row.dataset.id }), { passive: true });
     });
+    // Pagination buttons (appended after virtual list)
+    wrap.querySelector('#page-prev')?.addEventListener('click', () => {
+      if (S.jobsPage > 1) { S.jobsPage--; loadJobs(); }
+    }, { passive: true });
+    wrap.querySelector('#page-next')?.addEventListener('click', () => {
+      if (S.jobsPage < S.jobsPages) { S.jobsPage++; loadJobs(); }
+    }, { passive: true });
   }
 
   paint();
@@ -934,7 +963,7 @@ function renderDetail() {
       </div>` : ''}
     </div>` : ''}
 
-    <!-- Action Buttons — RBAC: admin-only download/share/deliver/delete -->
+    <!-- Action Buttons — WhatsApp always visible; download/deliver/delete admin-only -->
     <div class="action-row mt-3">
       ${isAdmin() && j.status !== 'delivered' ? `
       <button id="btn-deliver" class="action-btn" style="background:#1E88E5">
@@ -943,10 +972,11 @@ function renderDetail() {
       ${isAdmin() ? `
       <button id="btn-jobcard" class="action-btn" style="background:#43A047">
         <i class="fas fa-file-image"></i><span>Download</span>
-      </button>
+      </button>` : ''}
       <button id="btn-share" class="action-btn" style="background:#25D366">
         <i class="fab fa-whatsapp"></i><span>WhatsApp</span>
       </button>
+      ${isAdmin() ? `
       <button id="btn-del-job" class="action-btn" style="background:#E53935">
         <i class="fas fa-trash"></i><span>Delete</span>
       </button>` : ''}
@@ -1019,6 +1049,20 @@ function machineCardHTML(m, currentUserId) {
     ${isAdmin() ? `<button class="img-del-btn" data-iid="${img.id}" title="Remove image" onclick="event.stopPropagation()"><i class="fas fa-times" style="font-size:10px"></i></button>` : ''}
   </div>`).join('');
 
+  // work_done section (staff can see and update their own)
+  const workDoneHtml = `
+  <div class="machine-work-done">
+    <div style="font-size:12px;font-weight:700;color:#555;margin-bottom:3px"><i class="fas fa-check-circle" style="color:#43A047;margin-right:4px"></i>Work Done</div>
+    ${isAssigned ? `
+      <textarea data-mid="${m.id}" class="work-done-input form-input" rows="2"
+        placeholder="Describe what was repaired/done…" style="font-size:13px;min-height:52px">${esc(m.work_done||'')}</textarea>
+      <button data-mid="${m.id}" class="btn-sm btn-green btn-save-work-done" style="margin-top:4px;width:100%">
+        <i class="fas fa-save"></i> Save Work Done
+      </button>` :
+      (m.work_done ? `<div style="font-size:13px;color:#333;background:#f0fff4;padding:6px 10px;border-radius:6px">${esc(m.work_done)}</div>` : '<div style="font-size:12px;color:#bbb">Not recorded yet</div>')
+    }
+  </div>`;
+
   return `
   <div class="machine-card" style="border-left-color:${color};will-change:transform,opacity">
     <div class="machine-top">
@@ -1067,6 +1111,9 @@ function machineCardHTML(m, currentUserId) {
         <i class="fas fa-microphone"></i> Record Voice Note
       </button>`}
     </div>
+
+    <!-- Work Done (staff fills in what was done) -->
+    ${workDoneHtml}
 
     ${isAdmin() ? `
     <div class="machine-actions">
@@ -1158,6 +1205,19 @@ function bindDetail(j) {
     btn.addEventListener('click', () => showRequestAssignModal(btn.dataset.mid, j.id));
   });
 
+  // Save work done (assigned staff)
+  document.querySelectorAll('.btn-save-work-done').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const mid = btn.dataset.mid;
+      const textarea = document.querySelector(`.work-done-input[data-mid="${mid}"]`);
+      const workDone = textarea?.value.trim() || '';
+      try {
+        await API.put(`/api/machines/${mid}`, { work_done: workDone });
+        toast('Work done saved ✅', 'success');
+      } catch (_) { toast('Failed to save', 'error'); }
+    });
+  });
+
   // Add machine
   document.getElementById('btn-add-machine')?.addEventListener('click', () => showAddMachineModal(j.id));
 
@@ -1204,8 +1264,22 @@ function bindDetail(j) {
   // Job card download (admin only)
   document.getElementById('btn-jobcard')?.addEventListener('click', () => generateAndShareJobCard(j, false));
 
-  // WhatsApp share (admin only)
-  document.getElementById('btn-share')?.addEventListener('click', () => generateAndShareJobCard(j, true));
+  // WhatsApp share — always visible (admin gets full JPG+share; staff gets text-only share)
+  document.getElementById('btn-share')?.addEventListener('click', () => {
+    if (isAdmin()) {
+      generateAndShareJobCard(j, true);
+    } else {
+      // Staff: send WhatsApp text only (no financial data)
+      const text = shareTextStaff(j);
+      const rawMobile = (j.snap_mobile || '').replace(/\D/g, '');
+      // Only admin has snap_mobile; staff sees null — use a generic WA chat
+      const waUrl = rawMobile
+        ? `https://wa.me/${rawMobile.length === 10 ? '91' + rawMobile : rawMobile}?text=${encodeURIComponent(text)}`
+        : `https://wa.me/?text=${encodeURIComponent(text)}`;
+      window.open(waUrl, '_blank', 'noopener');
+      toast('WhatsApp opening…', 'success');
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1640,7 +1714,9 @@ function jobCardPrintHTML(j) {
         <div style="display:flex;justify-content:space-between;align-items:flex-start">
           <div style="flex:1;min-width:0">
             <div style="font-size:26px;font-weight:800;color:#1a1a2e">${i+1}. ${esc(m.product_name)}${m.quantity>1?` ×${m.quantity}`:''}</div>
+            ${m.brand ? `<div style="font-size:18px;color:#888;margin-top:2px">${esc(m.brand)}</div>` : ''}
             ${m.product_complaint ? `<div style="font-size:19px;color:#666;margin-top:4px">${esc(m.product_complaint)}</div>` : ''}
+            ${m.work_done ? `<div style="font-size:17px;color:#2E7D32;margin-top:6px;background:#f0fff4;padding:6px 10px;border-radius:6px"><b>Work Done:</b> ${esc(m.work_done)}</div>` : ''}
           </div>
           <div style="text-align:right;flex-shrink:0;margin-left:16px">
             <div style="background:${sc(m.status)};color:#fff;border-radius:8px;padding:6px 16px;font-size:17px;font-weight:700;white-space:nowrap">${sl(m.status)}</div>
@@ -1748,6 +1824,10 @@ async function generateAndShareJobCard(j, shareMode) {
     console.error(e);
     toast('Failed to generate card', 'error');
   }
+}
+
+function shareTextStaff(j) {
+  return `✅ Job *${j.id}* Update\n\nCustomer: *${j.snap_name || ''}*\nStatus: *${sl(j.status)}*\n\n— ADITION ELECTRIC SOLUTION`;
 }
 
 function shareText(j) {
@@ -1987,19 +2067,27 @@ async function loadStaffForSelects() {
 // ─────────────────────────────────────────────────────────────────────────────
 function reportsHTML() {
   if (!isAdmin()) {
-    // Staff: only export their own jobs
+    // Staff: only export their own completed jobs
     return `
     <div class="view-pad">
       <div class="report-card">
-        <div class="report-title"><i class="fas fa-file-excel" style="color:#43A047"></i> My Jobs Export</div>
-        <div class="report-desc">Export your assigned jobs to Excel (.xlsx)</div>
+        <div class="report-title"><i class="fas fa-file-excel" style="color:#43A047"></i> My Completed Work Export</div>
+        <div class="report-desc">Export your assigned jobs to Excel — includes Product, Problem, Work Done, Repair Date, Staff Name (no mobile or financial data)</div>
         <div class="form-row-2" style="margin-top:10px">
           <div class="form-group"><label class="form-label">From</label>
             <input id="mj-from" type="date" class="form-input"></div>
           <div class="form-group"><label class="form-label">To</label>
             <input id="mj-to" type="date" class="form-input"></div>
         </div>
-        <button id="btn-mj" class="btn-sm btn-green" style="margin-top:6px">
+        <div class="form-row-2" style="margin-top:6px">
+          <button id="btn-mj-month" class="btn-sm btn-ghost" style="flex:1">
+            <i class="fas fa-calendar-alt"></i> This Month
+          </button>
+          <button id="btn-mj-all" class="btn-sm btn-ghost" style="flex:1">
+            <i class="fas fa-list"></i> All Time
+          </button>
+        </div>
+        <button id="btn-mj" class="btn-sm btn-green" style="margin-top:10px;width:100%">
           <i class="fas fa-download"></i> Download .xlsx
         </button>
       </div>
@@ -2056,6 +2144,23 @@ function reportsHTML() {
 function bindReports() {
   // Staff: my jobs export
   if (!isAdmin()) {
+    // Quick filter buttons
+    document.getElementById('btn-mj-month')?.addEventListener('click', () => {
+      const now = new Date();
+      const ms  = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
+      const me  = now.toISOString().split('T')[0];
+      const fromEl = document.getElementById('mj-from');
+      const toEl   = document.getElementById('mj-to');
+      if (fromEl) fromEl.value = ms;
+      if (toEl)   toEl.value   = me;
+    });
+    document.getElementById('btn-mj-all')?.addEventListener('click', () => {
+      const fromEl = document.getElementById('mj-from');
+      const toEl   = document.getElementById('mj-to');
+      if (fromEl) fromEl.value = '';
+      if (toEl)   toEl.value   = '';
+    });
+
     document.getElementById('btn-mj')?.addEventListener('click', async () => {
       const from = document.getElementById('mj-from')?.value;
       const to   = document.getElementById('mj-to')?.value;
